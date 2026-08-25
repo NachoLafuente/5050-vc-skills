@@ -1,14 +1,16 @@
 # 5050-vc-skills
 
-**Diagnostics and IC prep for a VC/PE fund's own Attio deal pipeline.** Score your dealflow hygiene 0-100, see what moved since the last check-in, and assemble a per-deal memo skeleton -- all read from your workspace's actual pipeline data, not a pitch deck.
+**Diagnostics and IC prep for a VC/PE fund's own CRM.** Score your dealflow hygiene 0-100, see what moved since the last check-in, assemble a per-deal memo skeleton, check post-investment tracking cadence, and map co-investor coverage -- all read from your workspace's actual data, not a pitch deck.
 
 By [5050Growth](https://5050growth.com), a verified [Attio Expert](https://attio.com/experts/5050growth) consultancy. **10+ Attio engagements shipped in the past three months**, most of them for VC and PE funds.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│   /attio-vc-ic-pipeline-prep  Hygiene grade + what moved -- the IC open. │
-│   /attio-vc-ic-memo-prep      Per-deal IC memo skeleton from your notes. │
-└──────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│   /attio-vc-ic-pipeline-prep   Hygiene grade + what moved -- the IC open.  │
+│   /attio-vc-ic-memo-prep       Per-deal IC memo skeleton from your notes.  │
+│   /attio-vc-portfolio-health   Board/KPI cadence on the portfolio side.    │
+│   /attio-vc-coinvestor-map     Co-investor / syndicate coverage + ranking. │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
@@ -43,6 +45,8 @@ Sanitized example reports under [examples/](examples/), same fictional fund ("Ex
 throughout:
 - [sample-fund/ic-pipeline-prep.md](examples/sample-fund/ic-pipeline-prep.md) — hygiene grade 78/100 (C, solid sourcing and activity, weak thesis tagging, some stale active deals), plus a movement digest: 14 new deals, 3 advanced, 2 gone stale, 9 DD notes logged in the last two weeks.
 - [sample-fund/ic-memo-prep.md](examples/sample-fund/ic-memo-prep.md) — a per-deal memo skeleton for one of those deals (Latchkey Systems), including a section correctly marked "not covered in notes on file" rather than invented.
+- [sample-fund/portfolio-health.md](examples/sample-fund/portfolio-health.md) — portfolio cadence grade 28/100 (F) across 12 invested companies: half overdue or never-found on board-meeting notes, worse on KPI-reporting notes.
+- [sample-fund/coinvestor-map.md](examples/sample-fund/coinvestor-map.md) — 67% co-investor coverage across 18 deals, ranked frequency table topped by two repeat co-investors, six deals flagged with zero co-investor data logged.
 
 All names and numbers are synthetic.
 
@@ -69,13 +73,23 @@ Python 3.10+ and `requests` are the only dependencies.
 
 ## What's in here
 
-Two skills, covering the two halves of a real IC meeting: the pipeline-status open (how healthy is
-dealflow overall, what moved since last time), and the per-deal memo skeleton for whichever company
-is actually up for a vote. A real IC memo follows a known skeleton — Deal Header, Investment
-Thesis, Market, Team, Product/Traction, Business Model & Unit Economics, Risks & Mitigants — and
-that's the shape `attio-vc-ic-memo-prep` organizes toward.
+Four skills. The first two cover the two halves of a real IC meeting: the pipeline-status open (how
+healthy is dealflow overall, what moved since last time), and the per-deal memo skeleton for
+whichever company is actually up for a vote. A real IC memo follows a known skeleton — Deal Header,
+Investment Thesis, Market, Team, Product/Traction, Business Model & Unit Economics, Risks &
+Mitigants — and that's the shape `attio-vc-ic-memo-prep` organizes toward. The other two check
+things a real fund's CRM discipline is judged on outside the IC room: whether the portfolio side is
+actually being tracked (board meetings, KPI cadence) once money is wired, and whether co-investor /
+syndicate relationships are captured anywhere queryable at all.
+
+**Source support differs per skill.** `attio-vc-ic-pipeline-prep` and `attio-vc-ic-memo-prep` are
+**Attio-only**. `attio-vc-portfolio-health` and `attio-vc-coinvestor-map` support **Attio or
+Affinity** via `--source` (auto-detected if only one API key is set). Don't assume dual-source
+applies repo-wide — it doesn't.
 
 ### `/attio-vc-ic-pipeline-prep`: Pipeline hygiene grade + what moved
+
+*Source: Attio only.*
 
 The pipeline-status open of an IC meeting, not a per-deal memo. One combined report: a 0-100
 dealflow-hygiene grade first, then a written digest of what moved since the last check-in.
@@ -112,6 +126,8 @@ Full skill docs: [skills/attio-vc-ic-pipeline-prep/SKILL.md](skills/attio-vc-ic-
 
 ### `/attio-vc-ic-memo-prep`: Per-deal IC memo skeleton
 
+*Source: Attio only.*
+
 Takes one deal (`--deal "<name or record ID>"`) and assembles a memo skeleton populated **only**
 from what's actually in the fund's own Attio workspace: Deal Header fields (round size, valuation,
 security type, ownership target, sector, stage, source of intro), each labeled found / empty / not
@@ -131,35 +147,98 @@ ATTIO_API_KEY=<your-token> python skills/attio-vc-ic-memo-prep/ic_memo_prep.py -
 
 Full skill docs: [skills/attio-vc-ic-memo-prep/SKILL.md](skills/attio-vc-ic-memo-prep/SKILL.md). Sample output: [examples/sample-fund/ic-memo-prep.md](examples/sample-fund/ic-memo-prep.md).
 
+### `/attio-vc-portfolio-health`: Post-investment tracking cadence
+
+*Source: Attio or Affinity (`--source`).*
+
+Checks the **portfolio side** of the CRM, not the pipeline — companies already invested in.
+Detects the portfolio set two ways: a distinct "Portfolio"/"holding" object or list if one exists,
+otherwise the same deal/investment object/list the sibling skills use, filtered down to
+records/entries whose current stage reads as invested/closed-won (the flip of the closed-status
+exclusion the pipeline-hygiene skill uses for its own purposes).
+
+For each portfolio company, every linked Note is scanned for two keyword sets — board-meeting
+(`board meeting`, `board update`, `board deck`, …) and KPI-reporting (`kpi`, `metrics update`,
+`monthly update`, `investor update`) — and scored into a 0-100 cadence grade (50 points each
+dimension) against configurable thresholds (`--board-days` default 45, `--kpi-days` default 30).
+A company with **zero** matching notes ever is reported as "never," not merely "overdue" — that's a
+real finding about whether the cadence is happening at all, or just never logged with a
+recognizable keyword.
+
+```bash
+ATTIO_API_KEY=<your-token> python skills/attio-vc-portfolio-health/portfolio_health.py
+AFFINITY_API_KEY=<your-key> python skills/attio-vc-portfolio-health/portfolio_health.py --source affinity
+```
+
+Full skill docs: [skills/attio-vc-portfolio-health/SKILL.md](skills/attio-vc-portfolio-health/SKILL.md). Sample output: [examples/sample-fund/portfolio-health.md](examples/sample-fund/portfolio-health.md).
+
+### `/attio-vc-coinvestor-map`: Co-investor / syndicate coverage + ranking
+
+*Source: Attio or Affinity (`--source`).*
+
+A relationship-density **report**, not a grade — the name says "map." Scans every deal/investment
+record (pipeline **and** portfolio, not just closed-won — co-investor tracking matters both before
+and after a deal closes) for a co-investor/syndicate attribute, matched by keyword against
+attribute/field titles regardless of whether it's a proper record-reference/relationship attribute
+or a plain text/multi-select field. Reports **coverage %** (deals with at least one co-investor
+logged) plus a **ranked frequency table** of which co-investor names appear most often across the
+fund's own deal history, and flags zero-coverage deals as a gap.
+
+**Scope boundary:** this only ever reports what's in an explicit, human-entered field. It does not
+attempt to replicate Affinity's own relationship-strength/interaction-scoring product — that's
+built on private email/calendar sync data no public API exposes, and is Affinity's actual moat, not
+something a read-only diagnostic script can approximate.
+
+On Affinity specifically, this is the more expensive of the two new skills: co-investor data lives
+in a field, and Affinity has no bulk field-value endpoint, so every lookup costs one call per
+entity. Default sample is 75 entities (not Attio's 500), and `--full` always requires an explicit
+`--yes-i-know` confirmation on Affinity — see the skill's SKILL.md before running it at scale.
+
+```bash
+ATTIO_API_KEY=<your-token> python skills/attio-vc-coinvestor-map/coinvestor_map.py
+AFFINITY_API_KEY=<your-key> python skills/attio-vc-coinvestor-map/coinvestor_map.py --source affinity
+```
+
+Full skill docs: [skills/attio-vc-coinvestor-map/SKILL.md](skills/attio-vc-coinvestor-map/SKILL.md). Sample output: [examples/sample-fund/coinvestor-map.md](examples/sample-fund/coinvestor-map.md).
+
 ### Together
 
-`attio-vc-ic-pipeline-prep` and `attio-vc-ic-memo-prep` now cover both halves of a real IC
-meeting: the pipeline-status open that starts the meeting, and the per-deal memo skeleton that
-organizes what the fund already knows about whichever company comes up for a vote. Neither
-fabricates anything past what's actually in the workspace — the point of a real IC memo is to
-organize known facts and known unknowns, not manufacture confidence.
+`attio-vc-ic-pipeline-prep` and `attio-vc-ic-memo-prep` cover both halves of a real IC meeting: the
+pipeline-status open that starts the meeting, and the per-deal memo skeleton that organizes what
+the fund already knows about whichever company comes up for a vote. `attio-vc-portfolio-health` and
+`attio-vc-coinvestor-map` cover what a fund's CRM discipline gets judged on outside the IC room —
+whether the portfolio side keeps getting tracked once money is wired, and whether co-investor
+relationships are captured anywhere queryable at all. None of the four fabricates anything past
+what's actually in the workspace — the point of all of this is to organize known facts and known
+unknowns, not manufacture confidence.
 
 ---
 
 ## Read-only by design
 
-No write actions, no destructive operations. Grep `requests.request` in
+No write actions, no destructive operations, on either platform. Grep `requests.request` in
 [`_common.py`](skills/attio-vc-ic-pipeline-prep/_common.py) (the only place `attio-vc-ic-pipeline-prep`
 touches the network — `_hygiene.py` and `_movement.py` call into it, they don't call the API
 directly) or in [`ic_memo_prep.py`](skills/attio-vc-ic-memo-prep/ic_memo_prep.py), and you'll find
 only `"GET"` and `"POST"` against query/list endpoints (`/records/query`, `/records/{id}`, `/notes`,
 `/attributes/.../statuses`). Safe to run on a live fund workspace during business hours.
 
-Tokens are read from `--token`, `ATTIO_API_KEY`, or `ATTIO_OAUTH2` — never logged, never written to disk, never sent anywhere but `https://api.attio.com/v2/`.
+The two dual-source skills follow the same rule on both platforms: grep `requests.request` in each
+skill's `_attio.py` (Attio calls) and `_affinity.py` (Affinity calls) under
+[`skills/attio-vc-portfolio-health/`](skills/attio-vc-portfolio-health/) and
+[`skills/attio-vc-coinvestor-map/`](skills/attio-vc-coinvestor-map/), and you'll find `"GET"` and
+Attio's `"POST"`-query pattern only — Affinity's V1 API uses the same PATCH/PUT/POST-to-create verbs
+for writes as Attio does, and none of them appear anywhere in either backend.
+
+Tokens are read from `--token`/`ATTIO_API_KEY`/`ATTIO_OAUTH2` (Attio) or
+`--affinity-token`/`AFFINITY_API_KEY` (Affinity) — never logged, never written to disk, never sent
+anywhere but `https://api.attio.com/v2/` or `https://api.affinity.co/` respectively.
 
 ## Roadmap
 
-Likely next additions:
-
-- `/attio-vc-portfolio-health`: post-investment tracking hygiene (board meetings, KPI reporting cadence) for the portfolio side of the CRM, not just the pipeline
-- `/attio-vc-coinvestor-map`: relationship-density check on co-investor / syndicate tracking
-
-If you have a specific need, open an issue or [drop me a note](https://www.linkedin.com/in/nacholafuente/).
+Both items previously listed here (`attio-vc-portfolio-health`, `attio-vc-coinvestor-map`) are now
+shipped, above. Nothing specific queued right now — if you have a need this repo doesn't cover, open
+an issue or [drop me a note](https://www.linkedin.com/in/nacholafuente/).
 
 ## Who's behind this
 
