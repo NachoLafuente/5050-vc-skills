@@ -1,0 +1,11 @@
+# Per-workspace first-run config -- human-confirmed object/status answers,
+# cached locally so skills stop re-guessing on every run. Never committed:
+# it's derived from one fund's live workspace, not a repo artifact. See
+# README's "First run" section.
+.vc-skills-config/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

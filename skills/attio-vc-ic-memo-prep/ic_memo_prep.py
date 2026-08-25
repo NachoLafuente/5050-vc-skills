@@ -50,6 +50,8 @@ from typing import Any
 
 import requests
 
+import _vc_config as vc_config
+
 API_BASE = "https://api.attio.com/v2"
 SAMPLE_LIMIT = 500
 ATTIO_PAGE_MAX = 500
@@ -517,10 +519,25 @@ def main() -> int:
         description="Pull Deal Header fields + raw chronological notes for one deal from a VC/PE fund's Attio workspace"
     )
     p.add_argument("--token", help="Attio API token (default: $ATTIO_API_KEY or $ATTIO_OAUTH2)")
-    p.add_argument("--deal", required=True, help="Deal name (exact or partial) or Attio record ID")
-    p.add_argument("--object", help="Explicit deal/investment object slug. Overrides auto-detection.")
+    p.add_argument("--deal", help="Deal name (exact or partial) or Attio record ID. Required unless --detect-only.")
+    p.add_argument("--object", help="Explicit deal/investment object slug. Overrides auto-detection and any cached config.")
+    p.add_argument(
+        "--config",
+        help="Path to a saved workspace config (default: .vc-skills-config/<workspace-slug>.json). "
+        "See README's 'First run' section and this skill's SKILL.md.",
+    )
+    p.add_argument(
+        "--detect-only",
+        action="store_true",
+        help="Auto-detect the deal object only, print it as JSON, and exit -- no --deal needed, no "
+        "record/note calls made. Used for first-run setup; see README.",
+    )
     p.add_argument("--json", action="store_true", help="Output JSON instead of markdown")
     args = p.parse_args()
+
+    if not args.detect_only and not args.deal:
+        print("error: --deal is required (unless --detect-only)", file=sys.stderr)
+        return 2
 
     token = args.token or os.environ.get("ATTIO_API_KEY") or os.environ.get("ATTIO_OAUTH2")
     if not token:
@@ -533,13 +550,43 @@ def main() -> int:
         print(f"error: auth failed (HTTP {e.response.status_code}). Token invalid or revoked.", file=sys.stderr)
         return 2
 
+    workspace_slug = ws.get("workspace_slug", "")
     objects = fetch_objects(token)
+
+    if args.detect_only:
+        detected, candidates = detect_deal_object(objects)
+        print(
+            json.dumps(
+                {
+                    "source": "attio",
+                    "workspace_slug": workspace_slug,
+                    "object": detected.get("api_slug") if detected else None,
+                    "object_candidates": candidates,
+                    "note": (
+                        "Confirm `object` with the human, then save it as the \"object\" field in "
+                        f".vc-skills-config/{workspace_slug}.json. No records or notes were fetched."
+                    ),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    config = vc_config.load_config(workspace_slug, args.config)
 
     if args.object:
         object_slug = args.object
         matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
         object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
         detection_note = f"Using object `{object_slug}` (explicit `--object` override)."
+    elif config and config.get("object"):
+        object_slug = config["object"]
+        matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
+        object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
+        detection_note = (
+            f"Using object `{object_slug}` from cached config "
+            f"(`{args.config or vc_config.default_config_path(workspace_slug)}`)."
+        )
     else:
         detected, candidates = detect_deal_object(objects)
         if not detected:

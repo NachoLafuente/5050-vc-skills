@@ -57,6 +57,41 @@ opportunity/pipeline/portfolio-company naming, with the standard Attio `deals` o
 winning outright. If nothing matches, or two objects tie for the top score, the script exits and
 asks for `--object` rather than guessing. One detection pass covers both halves of the report.
 
+## First run: confirm once, skip the guessing forever
+
+The first time this skill runs against a workspace with no saved config, `ic_pipeline_prep.py`
+guesses the deal object and which pipeline statuses count as closed by keyword match against
+`CLOSED_KEYWORDS` -- reasonable, but a guess, redone on every single run. A human can just confirm
+the guess once instead.
+
+**On the first run for a workspace with no `.vc-skills-config/<workspace-slug>.json` file:**
+
+1. Run:
+   ```bash
+   ATTIO_API_KEY=<token> python skills/attio-vc-ic-pipeline-prep/ic_pipeline_prep.py --detect-only
+   ```
+   Cheap and read-only -- fetches the object and its status list only, no records, no notes, no
+   grade or digest computed.
+2. Read the printed JSON and ask the human, in plain language, up to 3 short questions (each
+   answerable in one sentence -- this is going to non-technical fund partners, keep it short):
+   - "I found a `<object>` object for your deal pipeline -- is that right, or is it a different
+     object?"
+   - "These statuses look closed/inactive to me: `<closed_status_titles_guess>`. Does that match how
+     you use Attio, or should any be added or removed?"
+   - "How many days without an update before an active deal should count as stale? (default 30)"
+3. Write the confirmed answers to `.vc-skills-config/<workspace-slug>.json` (the `workspace_slug` the
+   script printed):
+   ```json
+   {"source": "attio", "object": "<confirmed slug>", "closed_status_titles": ["..."], "stale_days": 30}
+   ```
+4. Run the real command. It will find the config, skip auto-detection and the status-classification
+   guess entirely, and use the confirmed values -- one fewer API call per run, too.
+
+**On every later run for that same workspace:** the config file already exists -- skip straight to
+running the real command, no `--detect-only`, no questions. `--object` and `--stale-days` on the
+command line still override the cached config for a one-off run, same as any other flag. `--config
+<path>` points at a config file somewhere other than the default.
+
 ## Before running: ask which scope
 
 Before invoking the script, ask the user:

@@ -55,8 +55,12 @@ STAGE_ATTR_KEYWORDS = ["stage", "status", "pipeline stage", "deal stage"]
 # won/invested vs lost/passed needs to be told apart -- the sibling only
 # needed "closed vs active", not "won vs lost". LOST_KEYWORDS is checked
 # first so a title like "Closed Lost" (which also matches "closed") is never
-# misclassified as invested just because it isn't currently active.
-LOST_KEYWORDS = ["lost", "pass", "declin", "dead", "reject", "withdraw", "abandon"]
+# misclassified as invested just because it isn't currently active. "not
+# pursu" (covers "Not Pursued" / "Not Pursuing") is in this list for the same
+# reason -- a status like "Closed - Not Pursued" matches "closed" but is a
+# passed/rejected deal, not an investment; bare substring matching on
+# INVESTED_KEYWORDS alone would misclassify it without this entry.
+LOST_KEYWORDS = ["lost", "pass", "declin", "dead", "reject", "withdraw", "abandon", "not pursu"]
 INVESTED_KEYWORDS = ["invested", "portfolio", "won", "closed"]
 
 # Candidate keys Attio might use for a note's inline content -- same set the
@@ -278,11 +282,22 @@ class LoadResult:
     companies: list[CompanyRecord]
 
 
-def load(token: str, object_arg: str | None, full: bool) -> LoadResult:
+def load(
+    token: str,
+    object_arg: str | None,
+    full: bool,
+    invested_titles_override: set[str] | None = None,
+) -> LoadResult:
     """Detect the portfolio set and return normalized CompanyRecords with
     their Notes attached. Raises DetectionError on anything unrecoverable
     (mirrors the sibling skill's "exit 2 with a clear message" pattern --
     the caller in portfolio_health.py catches this and does exactly that).
+
+    `invested_titles_override`, when given (from a human-confirmed
+    `.vc-skills-config/<workspace-slug>.json`), replaces the keyword-guessed
+    invested/closed-won status set on the stage-filtered fallback path --
+    see `_load_stage_filtered`. Has no effect on the distinct-object path,
+    which never guesses a status classification in the first place.
     """
     objects = fetch_objects(token)
 
@@ -290,7 +305,7 @@ def load(token: str, object_arg: str | None, full: bool) -> LoadResult:
         matched = next((o for o in objects if o.get("api_slug") == object_arg), None)
         if matched is None:
             raise DetectionError(f"object '{object_arg}' not found in this workspace's schema.")
-        return _load_stage_filtered(token, matched, full, explicit=True)
+        return _load_stage_filtered(token, matched, full, explicit=True, invested_titles_override=invested_titles_override)
 
     deal_obj, deal_candidates = detect_deal_object(objects)
     portfolio_obj = detect_portfolio_object(objects, deal_obj.get("api_slug") if deal_obj else None)
@@ -304,7 +319,7 @@ def load(token: str, object_arg: str | None, full: bool) -> LoadResult:
             "could not confidently identify a deal/investment or portfolio object in this "
             f"workspace's schema.{hint} Re-run with --object <slug>."
         )
-    return _load_stage_filtered(token, deal_obj, full, explicit=False)
+    return _load_stage_filtered(token, deal_obj, full, explicit=False, invested_titles_override=invested_titles_override)
 
 
 def _load_distinct_object(token: str, obj: dict, full: bool) -> LoadResult:
@@ -322,7 +337,13 @@ def _load_distinct_object(token: str, obj: dict, full: bool) -> LoadResult:
     return LoadResult(detection_note=detection_note, scope_note=scope_note, companies=companies)
 
 
-def _load_stage_filtered(token: str, obj: dict, full: bool, explicit: bool) -> LoadResult:
+def _load_stage_filtered(
+    token: str,
+    obj: dict,
+    full: bool,
+    explicit: bool,
+    invested_titles_override: set[str] | None = None,
+) -> LoadResult:
     object_slug = obj.get("api_slug")
     object_label = obj.get("singular_noun") or object_slug.title()
     attrs = fetch_attributes(token, object_slug)
@@ -335,8 +356,17 @@ def _load_stage_filtered(token: str, obj: dict, full: bool, explicit: bool) -> L
         )
     stage_slug = stage_attr.get("api_slug")
     stage_label = stage_attr.get("title") or stage_slug
-    statuses = fetch_statuses(token, object_slug, stage_slug)
-    invested_titles = classify_invested_statuses(statuses)
+
+    if invested_titles_override:
+        # Human-confirmed via .vc-skills-config -- skip the keyword guess and
+        # the /attributes/.../statuses call it would otherwise need.
+        invested_titles = set(invested_titles_override)
+        classification_src = "cached config"
+    else:
+        statuses = fetch_statuses(token, object_slug, stage_slug)
+        invested_titles = classify_invested_statuses(statuses)
+        classification_src = "auto-detected"
+
     if not invested_titles:
         raise DetectionError(
             f"stage attribute `{stage_label}` on `{object_slug}` has no status option that reads as "
@@ -353,7 +383,8 @@ def _load_stage_filtered(token: str, obj: dict, full: bool, explicit: bool) -> L
     src = "explicit `--object` override" if explicit else "auto-detected deal/investment object"
     detection_note = (
         f"No distinct portfolio object found; using {src} `{object_slug}` ({object_label}), filtered "
-        f"to records whose `{stage_label}` is one of: {', '.join(sorted(invested_titles))}."
+        f"to records whose `{stage_label}` is one of ({classification_src}): "
+        f"{', '.join(sorted(invested_titles))}."
     )
     scope_note = (
         f"{len(portfolio_records)} portfolio-stage of {len(records)} scanned "

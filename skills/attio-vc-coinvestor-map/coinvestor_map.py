@@ -43,6 +43,7 @@ import requests
 import _affinity as affinity
 import _attio as attio
 import _common as common
+import _vc_config as vc_config
 
 
 def resolve_source(args, attio_token: str | None, affinity_token: str | None) -> str:
@@ -77,8 +78,25 @@ def main() -> int:
     p.add_argument("--source", choices=["attio", "affinity"], help="Which CRM to read from. Auto-detected if only one token is set.")
     p.add_argument("--token", help="Attio API token (default: $ATTIO_API_KEY or $ATTIO_OAUTH2)")
     p.add_argument("--affinity-token", help="Affinity API key (default: $AFFINITY_API_KEY)")
-    p.add_argument("--object", help="[Attio] Explicit object slug. Overrides auto-detection.")
-    p.add_argument("--list", dest="list_arg", help="[Affinity] Explicit list id or exact name. Overrides auto-detection (normally unions pipeline + portfolio lists).")
+    p.add_argument("--object", help="[Attio] Explicit object slug. Overrides auto-detection and any cached config.")
+    p.add_argument(
+        "--list",
+        dest="list_arg",
+        help="[Affinity] Explicit list id or exact name. Overrides auto-detection and any cached "
+        "config (normally unions pipeline + portfolio lists -- an explicit single list, from either "
+        "this flag or a cached config's `list`, replaces the union with just that one list).",
+    )
+    p.add_argument(
+        "--config",
+        help="Path to a saved workspace config (default: .vc-skills-config/<workspace-slug>.json). "
+        "See README's 'First run' section and this skill's SKILL.md.",
+    )
+    p.add_argument(
+        "--detect-only",
+        action="store_true",
+        help="Auto-detect the deal/investment object or list(s) only, print as JSON, and exit -- no "
+        "record/field-value calls made. Used for first-run setup; see README.",
+    )
     p.add_argument("--sample-size", type=int, help="[Affinity] Override the default entity sample size (default: 75).")
     p.add_argument("--json", action="store_true", help="Output JSON instead of markdown")
     p.add_argument("--full", action="store_true", help="[Attio] paginate every record. [Affinity] check every entity's co-investor field -- real per-entity spend, requires --yes-i-know.")
@@ -108,8 +126,34 @@ def run_attio(token: str, args) -> int:
         print(f"error: auth failed (HTTP {e.response.status_code}). Token invalid or revoked.", file=sys.stderr)
         return 2
 
+    workspace_slug = ws.get("workspace_slug", "")
+
+    if args.detect_only:
+        objects = attio.fetch_objects(token)
+        detected, candidates = attio.detect_deal_object(objects)
+        print(
+            json.dumps(
+                {
+                    "source": "attio",
+                    "workspace_slug": workspace_slug,
+                    "object": detected.get("api_slug") if detected else None,
+                    "object_candidates": candidates,
+                    "note": (
+                        "Confirm `object` with the human, then save it as the \"object\" field in "
+                        f".vc-skills-config/{workspace_slug}.json. No records were fetched -- this "
+                        "skill has no invested/closed status guessing to confirm, only the object."
+                    ),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    config = vc_config.load_config(workspace_slug, args.config)
+    object_arg = args.object or (config.get("object") if config else None)
+
     try:
-        result = attio.load(token, args.object, args.full)
+        result = attio.load(token, object_arg, args.full)
     except attio.DetectionError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -120,7 +164,7 @@ def run_attio(token: str, args) -> int:
 
     meta = {
         "fund_name": ws.get("workspace_name", "Unknown"),
-        "workspace_slug": ws.get("workspace_slug", ""),
+        "workspace_slug": workspace_slug,
         "source_label": "Attio",
         "run_ts": _now_str(),
         "detection_note": result.detection_note,
@@ -131,8 +175,40 @@ def run_attio(token: str, args) -> int:
 
 
 def run_affinity(key: str, args) -> int:
+    # Same "no self/whoami-equivalent identity call on Affinity" note as the
+    # sibling skill attio-vc-portfolio-health -- "affinity" is a static
+    # workspace_slug, one cached config per machine/checkout across every
+    # Affinity account run from it.
+    workspace_slug = "affinity"
+
+    if args.detect_only:
+        lists = affinity.fetch_lists(key)
+        target_lists = affinity.detect_deal_lists(lists)
+        print(
+            json.dumps(
+                {
+                    "source": "affinity",
+                    "workspace_slug": workspace_slug,
+                    "lists_matched": [l.get("name") for l in target_lists],
+                    "note": (
+                        "Auto-detection unions every list above (pipeline + portfolio) on each real "
+                        "run. If that's correct, leave `list` unset in config -- caching a single "
+                        "`list` value overrides the union down to just that one list, same as "
+                        "--list. Confirm with the human, then save to "
+                        f".vc-skills-config/{workspace_slug}.json if a single-list override is "
+                        "actually wanted. No field-values were read."
+                    ),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    config = vc_config.load_config(workspace_slug, args.config)
+    list_arg = args.list_arg or (config.get("list") if config else None)
+
     try:
-        result = affinity.load(key, args.list_arg, args.full, args.sample_size, args.yes_i_know)
+        result = affinity.load(key, list_arg, args.full, args.sample_size, args.yes_i_know)
     except affinity.DetectionError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -146,7 +222,7 @@ def run_affinity(key: str, args) -> int:
 
     meta = {
         "fund_name": "Affinity account",
-        "workspace_slug": "affinity",
+        "workspace_slug": workspace_slug,
         "source_label": "Affinity",
         "run_ts": _now_str(),
         "detection_note": result.detection_note,

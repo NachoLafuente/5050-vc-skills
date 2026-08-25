@@ -57,6 +57,7 @@ import requests
 import _common as common
 import _hygiene as hygiene
 import _movement as movement
+import _vc_config as vc_config
 
 DEFAULT_STALE_DAYS = 30
 DEFAULT_DAYS = 14
@@ -148,14 +149,26 @@ def main() -> int:
         )
     )
     p.add_argument("--token", help="Attio API token (default: $ATTIO_API_KEY or $ATTIO_OAUTH2)")
-    p.add_argument("--object", help="Explicit deal/investment object slug. Overrides auto-detection.")
+    p.add_argument("--object", help="Explicit deal/investment object slug. Overrides auto-detection and any cached config.")
+    p.add_argument(
+        "--config",
+        help="Path to a saved workspace config (default: .vc-skills-config/<workspace-slug>.json). "
+        "See README's 'First run' section and this skill's SKILL.md.",
+    )
+    p.add_argument(
+        "--detect-only",
+        action="store_true",
+        help="Auto-detect the deal object and its candidate closed-stage statuses only, print as "
+        "JSON, and exit -- no record/note calls made, no grade or digest computed. Used for "
+        "first-run setup; see README.",
+    )
     p.add_argument(
         "--stale-days",
         type=int,
-        default=DEFAULT_STALE_DAYS,
+        default=None,
         help=(
             "Days without an update before an active-stage deal counts as stale in the hygiene "
-            f"grade (default: {DEFAULT_STALE_DAYS})"
+            f"grade (default: {DEFAULT_STALE_DAYS}, or a cached config's stale_days if set)"
         ),
     )
     p.add_argument(
@@ -183,13 +196,23 @@ def main() -> int:
         print(f"error: auth failed (HTTP {e.response.status_code}). Token invalid or revoked.", file=sys.stderr)
         return 2
 
+    workspace_slug = ws.get("workspace_slug", "")
     objects = common.fetch_objects(token)
+    config = None if args.detect_only else vc_config.load_config(workspace_slug, args.config)
 
     if args.object:
         object_slug = args.object
         matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
         object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
         detection_note = f"Using object `{object_slug}` (explicit `--object` override)."
+    elif config and config.get("object"):
+        object_slug = config["object"]
+        matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
+        object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
+        detection_note = (
+            f"Using object `{object_slug}` from cached config "
+            f"(`{args.config or vc_config.default_config_path(workspace_slug)}`)."
+        )
     else:
         detected, candidates = common.detect_deal_object(objects)
         if not detected:
@@ -211,12 +234,50 @@ def main() -> int:
         print(f"error: could not read attributes for object '{object_slug}' (HTTP {status}).", file=sys.stderr)
         return 2
 
+    if args.detect_only:
+        stage_attr = common.find_stage_attribute(attrs)
+        closed_guess: list[str] = []
+        all_status_titles: list[str] = []
+        stage_slug_out = None
+        if stage_attr is not None:
+            stage_slug_out = stage_attr.get("api_slug")
+            try:
+                statuses = common.fetch_statuses(token, object_slug, stage_slug_out)
+                all_status_titles = [s.get("title") for s in statuses if s.get("title")]
+                closed_guess = sorted(common.classify_closed_statuses(statuses))
+            except requests.HTTPError:
+                pass
+        print(
+            json.dumps(
+                {
+                    "source": "attio",
+                    "workspace_slug": workspace_slug,
+                    "object": object_slug,
+                    "object_candidates": None if args.object else common.detect_deal_object(objects)[1],
+                    "stage_attribute": stage_slug_out,
+                    "status_titles_all": all_status_titles,
+                    "closed_status_titles_guess": closed_guess,
+                    "stale_days_default": DEFAULT_STALE_DAYS,
+                    "note": (
+                        "Confirm `object`, `closed_status_titles_guess`, and `stale_days` with the "
+                        "human, then save the confirmed values as "
+                        f".vc-skills-config/{workspace_slug}.json. No records or notes were fetched, "
+                        "no grade or digest was computed."
+                    ),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
     try:
         records = common.fetch_records(token, object_slug, full=args.full)
     except requests.HTTPError as e:
         status = getattr(e.response, "status_code", "?")
         print(f"error: could not read records for object '{object_slug}' (HTTP {status}).", file=sys.stderr)
         return 2
+
+    stale_days = args.stale_days if args.stale_days is not None else (config or {}).get("stale_days", DEFAULT_STALE_DAYS)
 
     # --- Stage-attribute + closed-status detection, done once and shared -----
     stage_attr = common.find_stage_attribute(attrs)
@@ -233,13 +294,17 @@ def main() -> int:
     if stage_attr is not None:
         stage_slug = stage_attr.get("api_slug")
         stage_label = stage_attr.get("title") or stage_slug
-        try:
-            statuses = common.fetch_statuses(token, object_slug, stage_slug)
-            closed_titles = common.classify_closed_statuses(statuses)
+        if config and config.get("closed_status_titles"):
+            closed_titles = set(config["closed_status_titles"])
             stage_ok = True
-        except requests.HTTPError:
-            stage_error = f"Could not read status options for `{stage_label}` -- skipped."
-            stage_skip_note = stage_error
+        else:
+            try:
+                statuses = common.fetch_statuses(token, object_slug, stage_slug)
+                closed_titles = common.classify_closed_statuses(statuses)
+                stage_ok = True
+            except requests.HTTPError:
+                stage_error = f"Could not read status options for `{stage_label}` -- skipped."
+                stage_skip_note = stage_error
 
     # --- Notes, fetched once and shared -------------------------------------
     notes: list[dict] | None
@@ -267,7 +332,7 @@ def main() -> int:
     hygiene_sections = [
         hygiene.score_source_of_intro(attrs, records),
         hygiene.score_thesis_classification(attrs, records),
-        hygiene.score_stage_gate_hygiene(records, stage_attr, closed_titles, stage_error, args.stale_days),
+        hygiene.score_stage_gate_hygiene(records, stage_attr, closed_titles, stage_error, stale_days),
         hygiene.score_interaction_coverage(records, all_noted_ids, notes_error),
     ]
     applicable = [s for s in hygiene_sections if s.applicable]
@@ -328,7 +393,7 @@ def main() -> int:
         "detection_note": detection_note,
         "records_scanned": len(records),
         "full_scan": args.full,
-        "stale_days": args.stale_days,
+        "stale_days": stale_days,
         "days": args.days,
     }
 

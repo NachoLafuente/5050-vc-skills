@@ -95,6 +95,32 @@ opportunity/pipeline/portfolio-company naming -- same approach as the sibling sk
 script keeps its own independent copy of that logic (see "Why this script doesn't share code"
 below).
 
+## First run: confirm the deal object once
+
+`ic_memo_prep.py` auto-detects the deal/investment object the same way the sibling skill
+`attio-vc-ic-pipeline-prep` does. This skill has no invested/closed status guessing to confirm --
+it looks up one named deal directly, it never classifies statuses -- so there's only one thing worth
+caching, and all 4 skills in this repo share the same `.vc-skills-config/<workspace-slug>.json` file.
+**If a sibling skill already ran `--detect-only` and saved a config with an `object` field for this
+workspace, this skill already has what it needs -- nothing more to ask.**
+
+Otherwise, on the first use of any skill in this repo for a workspace with no config file yet:
+
+1. Run:
+   ```bash
+   ATTIO_API_KEY=<token> python skills/attio-vc-ic-memo-prep/ic_memo_prep.py --detect-only
+   ```
+   Cheap and read-only -- fetches the object list only, no deal lookup, no notes. No `--deal` needed.
+2. Ask the human one short question: "I found a `<object>` object for your deal pipeline -- is that
+   right, or is it a different object?"
+3. Write the confirmed slug to `.vc-skills-config/<workspace-slug>.json`:
+   `{"source": "attio", "object": "<confirmed slug>"}`.
+4. Run the real command with `--deal "<name or record ID>"` as normal -- it will use the cached
+   object and skip auto-detection.
+
+`--object` on the command line still overrides the cached config for a one-off run. `--config <path>`
+points at a config file elsewhere.
+
 ## How to run
 
 ```bash

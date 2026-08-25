@@ -78,6 +78,36 @@ fund's entire monthly API budget on one run of a free diagnostic tool:
 Before running `--full --yes-i-know` on the user's behalf, make sure they've actually seen the
 budget line and understand it's real spend, not a formality to click through.
 
+## First run: confirm the object/list once
+
+This skill has no invested/closed status guessing to confirm -- it never filters by pipeline stage
+(co-investor tracking matters pre- and post-investment both, see "What gets checked" above), so the
+only thing worth caching is which object (Attio) or list(s) (Affinity) hold your deals. All 4 skills
+in this repo share the same `.vc-skills-config/<workspace-slug>.json` file, so **if a sibling skill
+already ran `--detect-only` and saved a config with an `object` field for this workspace on Attio,
+this skill already has what it needs.**
+
+Otherwise, on the first use of any skill in this repo for a workspace with no config file yet:
+
+1. Run `--detect-only`:
+   ```bash
+   ATTIO_API_KEY=<token> python skills/attio-vc-coinvestor-map/coinvestor_map.py --detect-only
+   AFFINITY_API_KEY=<key> python skills/attio-vc-coinvestor-map/coinvestor_map.py --source affinity --detect-only
+   ```
+   Cheap and read-only -- list/object metadata only, no per-entity `/field-values` spend.
+2. Ask the human one short question: "I found `<object>` (Attio) / `<lists_matched>` (Affinity) for
+   your deals -- is that right?"
+3. On Attio, write the confirmed slug to `.vc-skills-config/<workspace-slug>.json`:
+   `{"source": "attio", "object": "<confirmed slug>"}`. **On Affinity, only add a `list` field to
+   the cached config if the human specifically wants a single list checked** -- leaving it unset
+   keeps this skill's normal behavior of unioning every matching list (pipeline + portfolio) on each
+   run, which is usually what's wanted for co-investor coverage; see the printed `note` field for
+   the exact caveat.
+4. Run the real command as normal.
+
+`--object`/`--list` on the command line still override the cached config for a one-off run.
+`--config <path>` points at a config file elsewhere.
+
 ## How to run
 
 Attio, sample mode:

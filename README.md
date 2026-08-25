@@ -54,6 +54,25 @@ All names and numbers are synthetic.
 
 ## Run it in 5 minutes
 
+**Recommended: install as a Claude Code plugin.** Paste these two lines into a Claude Code session:
+
+```
+/plugin marketplace add NachoLafuente/5050-vc-skills
+/plugin install 5050-vc-skills
+```
+
+No `git clone`, no manual file copying -- Claude Code fetches the 4 skills directly. Then just ask
+Claude to run one, e.g. "run the pipeline hygiene check on my Attio workspace, token is
+`<your-attio-api-token>`." Claude handles the first-run setup questions (see "First run" below) and
+runs the script itself.
+
+One manual step still applies either way you install -- see "One thing plugin install doesn't do"
+below.
+
+### Manual install
+
+For running the scripts directly, without Claude Code's plugin system:
+
 ```bash
 # 1. Get the toolkit
 git clone https://github.com/NachoLafuente/5050-vc-skills.git
@@ -67,7 +86,41 @@ ATTIO_API_KEY=<your-attio-api-token> python skills/attio-vc-ic-pipeline-prep/ic_
 #    -> https://calendar.notion.so/meet/nacholafuentemoreno/gtm-expert
 ```
 
-Python 3.10+ and `requests` are the only dependencies.
+### One thing plugin install doesn't do
+
+`/plugin install` puts these skills' files where Claude Code can find and run them -- it does
+**not** install Python packages. Either install path (plugin or manual) still needs `requests`
+importable in whatever Python interpreter actually runs the scripts (Claude Code's Bash tool, or
+your own shell):
+
+```bash
+pip install requests
+```
+
+Python 3.10+ is required either way. That's the one remaining manual step; we haven't rewritten the
+network calls in stdlib `urllib` to avoid it -- that's a bigger change across every script in this
+repo than trading one `pip install` for.
+
+---
+
+## First run
+
+The first time any of these 4 skills runs against a fund's workspace, it would otherwise re-guess
+(via keyword matching) which object is the deal/investment object, and which statuses count as
+closed/invested -- on every single run, with no memory. Instead, run any skill's `--detect-only`
+flag once, confirm the guess with a handful of short questions, and the answer is cached to
+`.vc-skills-config/<workspace-slug>.json` (gitignored, never committed -- it's derived from your
+live workspace, not repo content). Every later run of any of the 4 skills against that same
+workspace skips straight to the real command, no re-asking.
+
+Each skill's own `SKILL.md` has the exact `--detect-only` command and the short question list for
+that skill -- see each skill's own "First run" section:
+[attio-vc-ic-pipeline-prep](skills/attio-vc-ic-pipeline-prep/SKILL.md#first-run-confirm-once-skip-the-guessing-forever),
+[attio-vc-ic-memo-prep](skills/attio-vc-ic-memo-prep/SKILL.md#first-run-confirm-the-deal-object-once),
+[attio-vc-portfolio-health](skills/attio-vc-portfolio-health/SKILL.md#first-run-confirm-once-skip-the-guessing-forever),
+[attio-vc-coinvestor-map](skills/attio-vc-coinvestor-map/SKILL.md#first-run-confirm-the-objectlist-once).
+All 4 skills share one config file per workspace -- confirm the object once via any of them and the
+other 3 already have it.
 
 ---
 

@@ -28,7 +28,6 @@ Read-only: GET and POST-query calls only. No PATCH, PUT, or POST-write calls.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -85,10 +84,6 @@ def fetch_records(token: str, object_slug: str, full: bool = False, limit: int =
             break
         offset += ATTIO_PAGE_MAX
     return all_records
-
-
-def _matches_keyword(haystack: str, keyword: str) -> bool:
-    return re.search(r"\b" + re.escape(keyword) + r"s?\b", haystack) is not None
 
 
 def detect_deal_object(objects: list[dict]) -> tuple[dict | None, list[str]]:

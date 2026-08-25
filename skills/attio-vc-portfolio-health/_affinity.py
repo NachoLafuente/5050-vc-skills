@@ -72,7 +72,11 @@ NOTES_SAMPLE_PAGES = 10  # up to 5,000 notes by default; --full paginates all
 PORTFOLIO_LIST_KEYWORDS = ["portfolio", "holding"]
 DEAL_LIST_KEYWORDS = ["deal", "investment", "opportunit", "portfolio compan", "pipeline"]
 STATUS_FIELD_KEYWORDS = ["status", "stage"]
-LOST_KEYWORDS = ["lost", "pass", "declin", "dead", "reject", "withdraw", "abandon"]
+# "not pursu" (covers "Not Pursued"/"Not Pursuing") is deliberately included:
+# a status like "Closed - Not Pursued" matches "closed" in INVESTED_KEYWORDS
+# but is a passed/rejected deal, not an investment. See the Attio backend's
+# identical list for the fuller rationale (same fix applied on both platforms).
+LOST_KEYWORDS = ["lost", "pass", "declin", "dead", "reject", "withdraw", "abandon", "not pursu"]
 INVESTED_KEYWORDS = ["invested", "portfolio", "won", "closed"]
 
 # entity_type in Affinity's list-entries / notes payloads: 0 = Person,
@@ -106,7 +110,7 @@ def parse_dt(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        dt = datetime.fromisoformat(ts)
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
@@ -238,7 +242,22 @@ class LoadResult:
     companies: list[CompanyRecord]
 
 
-def load(key: str, list_arg: str | None, full: bool, sample_size: int | None, yes_i_know: bool) -> LoadResult:
+def load(
+    key: str,
+    list_arg: str | None,
+    full: bool,
+    sample_size: int | None,
+    yes_i_know: bool,
+    invested_titles_override: set[str] | None = None,
+) -> LoadResult:
+    """`invested_titles_override`, when given (from a human-confirmed
+    `.vc-skills-config/<workspace-slug>.json`), replaces the keyword-guessed
+    invested/closed-won status set on the stage-filtered fallback path -- see
+    `_load_stage_filtered`. It does not reduce the per-entity /field-values
+    spend on that path (each sampled entry's *current* status still has to be
+    read live), only the semantic guess of which status option TEXTS count
+    as invested.
+    """
     rate = fetch_rate_limit(key)
     print_budget(rate)
 
@@ -262,7 +281,7 @@ def load(key: str, list_arg: str | None, full: bool, sample_size: int | None, ye
             f"could not confidently identify a portfolio or deal/investment list in this Affinity "
             f"account.{hint} Re-run with --list <id-or-name>."
         )
-    return _load_stage_filtered(key, deal_list, full, sample_cap, yes_i_know)
+    return _load_stage_filtered(key, deal_list, full, sample_cap, yes_i_know, invested_titles_override)
 
 
 def _load_distinct_list(key: str, lst: dict, full: bool, sample_cap: int) -> LoadResult:
@@ -280,7 +299,14 @@ def _load_distinct_list(key: str, lst: dict, full: bool, sample_cap: int) -> Loa
     return LoadResult(detection_note=detection_note, scope_note=scope_note, companies=companies)
 
 
-def _load_stage_filtered(key: str, lst: dict, full: bool, sample_cap: int, yes_i_know: bool) -> LoadResult:
+def _load_stage_filtered(
+    key: str,
+    lst: dict,
+    full: bool,
+    sample_cap: int,
+    yes_i_know: bool,
+    invested_titles_override: set[str] | None = None,
+) -> LoadResult:
     """No distinct portfolio list exists -- fall back to the deal list's
     Status field. This path costs one /field-values call per sampled entry
     (Affinity has no bulk field-value endpoint), so it's gated the same way
@@ -302,14 +328,21 @@ def _load_stage_filtered(key: str, lst: dict, full: bool, sample_cap: int, yes_i
             "if a different Affinity list holds your portfolio."
         )
 
-    invested_option_texts = set()
-    for opt in status_field.get("dropdown_options") or []:
-        title = (opt.get("text") or "")
-        low = title.lower()
-        if any(kw in low for kw in LOST_KEYWORDS):
-            continue
-        if any(kw in low for kw in INVESTED_KEYWORDS):
-            invested_option_texts.add(title)
+    if invested_titles_override:
+        # Human-confirmed via .vc-skills-config -- skip the keyword guess
+        # over this field's dropdown options.
+        invested_option_texts = set(invested_titles_override)
+        classification_src = "cached config"
+    else:
+        invested_option_texts = set()
+        for opt in status_field.get("dropdown_options") or []:
+            title = (opt.get("text") or "")
+            low = title.lower()
+            if any(kw in low for kw in LOST_KEYWORDS):
+                continue
+            if any(kw in low for kw in INVESTED_KEYWORDS):
+                invested_option_texts.add(title)
+        classification_src = "auto-detected"
 
     if not invested_option_texts:
         raise DetectionError(
@@ -353,7 +386,8 @@ def _load_stage_filtered(key: str, lst: dict, full: bool, sample_cap: int, yes_i
     detection_note = (
         f"No distinct portfolio list found; using deal/investment list `{lst.get('name')}` (list "
         f"{list_id}), filtered via /field-values (one call per sampled entry) to entries whose "
-        f"`{status_field.get('name')}` is one of: {', '.join(sorted(invested_option_texts))}."
+        f"`{status_field.get('name')}` is one of ({classification_src}): "
+        f"{', '.join(sorted(invested_option_texts))}."
     )
     scope_note = (
         f"{len(kept_entries)} portfolio-status of {len(entries)} entries checked "

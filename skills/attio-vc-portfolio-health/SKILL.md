@@ -51,6 +51,46 @@ the script exits and asks for `--source` explicitly rather than guessing which C
 Optional `--object <slug>` (Attio) or `--list <id-or-name>` (Affinity) to point at the portfolio
 object/list explicitly, overriding auto-detection.
 
+## First run: confirm once, skip the guessing forever
+
+The first time this skill runs against a workspace with no saved config, it guesses the portfolio
+object/list, and -- if no distinct portfolio object/list exists -- which statuses count as
+invested/closed-won, by keyword match. A human can confirm those answers once instead of the tool
+re-guessing (and risking a misclassification, e.g. a status literally named "Closed - Not Pursued"
+reading as invested purely because it contains "closed") on every single run.
+
+**On the first run for a workspace with no `.vc-skills-config/<workspace-slug>.json` file:**
+
+1. Run `--detect-only` for the relevant source:
+   ```bash
+   ATTIO_API_KEY=<token> python skills/attio-vc-portfolio-health/portfolio_health.py --source attio --detect-only
+   AFFINITY_API_KEY=<key> python skills/attio-vc-portfolio-health/portfolio_health.py --source affinity --detect-only
+   ```
+   Cheap and read-only -- no records/entries, no notes, and, on Affinity, **no per-entity
+   `/field-values` calls** -- the expensive part this cache exists to stop re-spending on every run.
+2. Read the printed JSON and ask the human, in plain language, up to 4 short questions (each
+   answerable in one sentence -- this is going to non-technical fund partners, keep it short):
+   - "I found `<object>`/`<list>` for your portfolio -- is that right?"
+   - Only if `uses_status_filter` is true: "These statuses look like closed-won/invested to me:
+     `<invested_status_titles_guess>`. Does that match how you use Attio/Affinity, or should any be
+     added or removed?"
+   - "How many days without a board-meeting note before a portfolio company counts as overdue?
+     (default 45)"
+   - "How many days without a KPI-update note before it counts as overdue? (default 30)"
+3. Write the confirmed answers to `.vc-skills-config/<workspace-slug>.json` (Affinity has no
+   per-workspace identity call in this repo, so its cache key is the fixed slug `affinity` -- see
+   Limitations below):
+   ```json
+   {"source": "attio", "object": "<confirmed slug>", "invested_status_titles": ["..."], "board_days": 45, "kpi_days": 30}
+   ```
+4. Run the real command. It will find the config, skip auto-detection and the status-classification
+   guess entirely, and use the confirmed values.
+
+**On every later run for that same workspace:** skip straight to the real command -- no
+`--detect-only`, no questions. `--object`/`--list`, `--board-days`, `--kpi-days` on the command line
+still override the cached config for a one-off run. `--config <path>` points at a config file
+elsewhere.
+
 ## Before running: ask which scope, and check the source
 
 Before invoking the script:
@@ -182,7 +222,12 @@ Markdown (or JSON with `--json`):
 ## Limitations
 
 - Detection (object/list, status/stage) is name-based on both platforms. A workspace with unusual
-  naming for its portfolio object or its status options needs `--object`/`--list`.
+  naming for its portfolio object or its status options needs `--object`/`--list`. Bare substring
+  matching on a status title can misclassify a compound name -- e.g. a status literally called
+  "Closed - Not Pursued" contains "closed" but is a passed deal, not an investment; this is checked
+  for, but a workspace's own status-naming conventions may still trip up a keyword guess in ways not
+  anticipated here. A confirmed `.vc-skills-config/<workspace-slug>.json` (see "First run" above)
+  sidesteps this category of risk entirely by using a human-confirmed answer instead of a guess.
 - Cadence detection only reads whatever content text was already present in each platform's notes
   list response -- Attio's list response (checked for `content_plaintext`/`content_markdown`/etc.)
   and Affinity's (which already carries full note content inline). Neither backend makes an
