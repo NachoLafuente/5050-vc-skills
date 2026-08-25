@@ -80,7 +80,10 @@ def render(
     out.append(f"**Workspace:** `{slug}` &nbsp;·&nbsp; **Run:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     out.append("")
     out.append(meta["detection_note"])
-    scope_note = "all records" if meta["full_scan"] else f"up to {common.SAMPLE_LIMIT}-record sample"
+    if meta.get("bundle_mode"):
+        scope_note = "records supplied in the MCP bundle"
+    else:
+        scope_note = "all records" if meta["full_scan"] else f"up to {common.SAMPLE_LIMIT}-record sample"
     out.append(
         f"**Records scanned:** {meta['records_scanned']} ({scope_note}) &nbsp;·&nbsp; "
         f"**Stale threshold:** {meta['stale_days']} days &nbsp;·&nbsp; "
@@ -131,6 +134,7 @@ def render_json(
             },
             "records_scanned": meta["records_scanned"],
             "full_scan": meta["full_scan"],
+            "source": "mcp_bundle" if meta.get("bundle_mode") else "attio_api",
             "stale_days": meta["stale_days"],
             "movement_window_days": meta["days"],
             "hygiene": hygiene.hygiene_to_dict(hygiene_sections, hygiene_total),
@@ -149,6 +153,13 @@ def main() -> int:
         )
     )
     p.add_argument("--token", help="Attio API token (default: $ATTIO_API_KEY or $ATTIO_OAUTH2)")
+    p.add_argument(
+        "--input",
+        help="Path to an 'MCP bundle' JSON file assembled from Attio MCP tool calls, in place of a "
+        "live --token/ATTIO_API_KEY run. This is the default data-gathering path when Attio MCP "
+        "tools are available in the session -- see SKILL.md's 'Gathering data via MCP' section for "
+        "the exact schema and tool-call sequence. --token/ATTIO_API_KEY is ignored when --input is set.",
+    )
     p.add_argument("--object", help="Explicit deal/investment object slug. Overrides auto-detection and any cached config.")
     p.add_argument(
         "--config",
@@ -185,142 +196,220 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    token = args.token or os.environ.get("ATTIO_API_KEY") or os.environ.get("ATTIO_OAUTH2")
-    if not token:
-        print("error: provide --token or set ATTIO_API_KEY", file=sys.stderr)
-        return 2
-
-    try:
-        ws = common.fetch_self(token)
-    except requests.HTTPError as e:
-        print(f"error: auth failed (HTTP {e.response.status_code}). Token invalid or revoked.", file=sys.stderr)
-        return 2
-
-    workspace_slug = ws.get("workspace_slug", "")
-    objects = common.fetch_objects(token)
-    config = None if args.detect_only else vc_config.load_config(workspace_slug, args.config)
-
-    if args.object:
-        object_slug = args.object
-        matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
-        object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
-        detection_note = f"Using object `{object_slug}` (explicit `--object` override)."
-    elif config and config.get("object"):
-        object_slug = config["object"]
-        matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
-        object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
-        detection_note = (
-            f"Using object `{object_slug}` from cached config "
-            f"(`{args.config or vc_config.default_config_path(workspace_slug)}`)."
-        )
-    else:
-        detected, candidates = common.detect_deal_object(objects)
-        if not detected:
-            hint = f" Candidates seen: {', '.join(candidates)}." if candidates else ""
+    if args.input:
+        # --- MCP bundle path: no network calls, no token. See _common.py's
+        # "MCP bundle loading" section and this skill's SKILL.md for the
+        # schema and how Claude assembles this file via MCP tool calls. ---
+        if args.detect_only:
             print(
-                "error: could not confidently identify a deal/investment object in this "
-                f"workspace's schema.{hint} Re-run with --object <slug>.",
+                "error: --detect-only is for the --token/ATTIO_API_KEY path. In MCP mode, detect "
+                "the object directly with the Attio MCP tools (list-lists, "
+                "list-attribute-definitions) -- see SKILL.md's 'Gathering data via MCP' section.",
                 file=sys.stderr,
             )
             return 2
-        object_slug = detected.get("api_slug")
-        object_label = detected.get("singular_noun") or object_slug.title()
-        detection_note = f"Auto-detected deal object: `{object_slug}` ({object_label})."
 
-    try:
-        attrs = common.fetch_attributes(token, object_slug)
-    except requests.HTTPError as e:
-        status = getattr(e.response, "status_code", "?")
-        print(f"error: could not read attributes for object '{object_slug}' (HTTP {status}).", file=sys.stderr)
-        return 2
+        try:
+            bundle = common.load_bundle(args.input)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"error: could not read --input bundle '{args.input}': {e}", file=sys.stderr)
+            return 2
 
-    if args.detect_only:
-        stage_attr = common.find_stage_attribute(attrs)
-        closed_guess: list[str] = []
-        all_status_titles: list[str] = []
-        stage_slug_out = None
-        if stage_attr is not None:
-            stage_slug_out = stage_attr.get("api_slug")
-            try:
-                statuses = common.fetch_statuses(token, object_slug, stage_slug_out)
-                all_status_titles = [s.get("title") for s in statuses if s.get("title")]
-                closed_guess = sorted(common.classify_closed_statuses(statuses))
-            except requests.HTTPError:
-                pass
-        print(
-            json.dumps(
-                {
-                    "source": "attio",
-                    "workspace_slug": workspace_slug,
-                    "object": object_slug,
-                    "object_candidates": None if args.object else common.detect_deal_object(objects)[1],
-                    "stage_attribute": stage_slug_out,
-                    "status_titles_all": all_status_titles,
-                    "closed_status_titles_guess": closed_guess,
-                    "stale_days_default": DEFAULT_STALE_DAYS,
-                    "note": (
-                        "Confirm `object`, `closed_status_titles_guess`, and `stale_days` with the "
-                        "human, then save the confirmed values as "
-                        f".vc-skills-config/{workspace_slug}.json. No records or notes were fetched, "
-                        "no grade or digest was computed."
-                    ),
-                },
-                indent=2,
+        ws = common.bundle_workspace(bundle)
+        workspace_slug = ws.get("workspace_slug", "")
+        config = vc_config.load_config(workspace_slug, args.config) if workspace_slug else None
+
+        object_slug = args.object or bundle.get("object_slug") or (config or {}).get("object") or ""
+        if not object_slug:
+            print(
+                "error: MCP bundle has no `object_slug`, and none was given via --object or found "
+                "in a cached config.",
+                file=sys.stderr,
             )
+            return 2
+        object_label = bundle.get("object_label") or object_slug.title()
+        detection_note = f"Using object `{object_slug}` from MCP bundle `{args.input}`."
+
+        attrs = common.bundle_attributes(bundle)
+        records = common.bundle_records(bundle)
+        notes = common.bundle_notes(bundle)
+        stage_statuses_raw = common.bundle_stage_statuses(bundle)
+
+        stale_days = args.stale_days if args.stale_days is not None else (config or {}).get("stale_days", DEFAULT_STALE_DAYS)
+
+        stage_attr = common.find_stage_attribute(attrs)
+        closed_titles: set[str] | None = None
+        stage_error: str | None = None
+        stage_skip_note = (
+            "No clear pipeline-stage (status-type) attribute detected on this object -- skipped. "
+            "This workspace may model stage differently, or have multiple status fields with "
+            "ambiguous names."
         )
-        return 0
+        stage_ok = False
+        stage_slug = None
 
-    try:
-        records = common.fetch_records(token, object_slug, full=args.full)
-    except requests.HTTPError as e:
-        status = getattr(e.response, "status_code", "?")
-        print(f"error: could not read records for object '{object_slug}' (HTTP {status}).", file=sys.stderr)
-        return 2
-
-    stale_days = args.stale_days if args.stale_days is not None else (config or {}).get("stale_days", DEFAULT_STALE_DAYS)
-
-    # --- Stage-attribute + closed-status detection, done once and shared -----
-    stage_attr = common.find_stage_attribute(attrs)
-    closed_titles: set[str] | None = None
-    stage_error: str | None = None
-    stage_skip_note = (
-        "No clear pipeline-stage (status-type) attribute detected on this object -- skipped. "
-        "This workspace may model stage differently, or have multiple status fields with "
-        "ambiguous names."
-    )
-    stage_ok = False
-    stage_slug = None
-
-    if stage_attr is not None:
-        stage_slug = stage_attr.get("api_slug")
-        stage_label = stage_attr.get("title") or stage_slug
-        if config and config.get("closed_status_titles"):
-            closed_titles = set(config["closed_status_titles"])
-            stage_ok = True
-        else:
-            try:
-                statuses = common.fetch_statuses(token, object_slug, stage_slug)
-                closed_titles = common.classify_closed_statuses(statuses)
+        if stage_attr is not None:
+            stage_slug = stage_attr.get("api_slug")
+            stage_label = stage_attr.get("title") or stage_slug
+            if config and config.get("closed_status_titles"):
+                closed_titles = set(config["closed_status_titles"])
                 stage_ok = True
-            except requests.HTTPError:
-                stage_error = f"Could not read status options for `{stage_label}` -- skipped."
+            elif stage_statuses_raw:
+                closed_titles = common.classify_closed_statuses(stage_statuses_raw)
+                stage_ok = True
+            else:
+                stage_error = (
+                    f"MCP bundle did not include `stage_statuses` for `{stage_label}`, and no cached "
+                    "`closed_status_titles` config exists -- skipped. See SKILL.md's 'Gathering data "
+                    "via MCP' section for how to populate `stage_statuses`."
+                )
                 stage_skip_note = stage_error
 
-    # --- Notes, fetched once and shared -------------------------------------
-    notes: list[dict] | None
-    notes_error: str | None
-    try:
-        notes = common.fetch_notes(token, object_slug, full=args.full)
         notes_error = None
-    except requests.HTTPError as e:
-        status = getattr(e.response, "status_code", "?")
-        notes = None
-        notes_error = f"Could not read Notes (HTTP {status}) -- token may lack note read scope. Skipped."
-
-    if notes is not None:
         all_noted_ids = {n.get("parent_record_id") for n in notes if n.get("parent_record_id")}
+
+        bundle_mode = True
+        full_scan = True  # bundle content is whatever Claude decided is in scope -- treated like a full scan, not a sample
     else:
-        all_noted_ids = None
+        token = args.token or os.environ.get("ATTIO_API_KEY") or os.environ.get("ATTIO_OAUTH2")
+        if not token:
+            print("error: provide --token or set ATTIO_API_KEY, or pass --input with an MCP bundle", file=sys.stderr)
+            return 2
+
+        try:
+            ws = common.fetch_self(token)
+        except requests.HTTPError as e:
+            print(f"error: auth failed (HTTP {e.response.status_code}). Token invalid or revoked.", file=sys.stderr)
+            return 2
+
+        workspace_slug = ws.get("workspace_slug", "")
+        objects = common.fetch_objects(token)
+        config = None if args.detect_only else vc_config.load_config(workspace_slug, args.config)
+
+        if args.object:
+            object_slug = args.object
+            matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
+            object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
+            detection_note = f"Using object `{object_slug}` (explicit `--object` override)."
+        elif config and config.get("object"):
+            object_slug = config["object"]
+            matched = next((o for o in objects if o.get("api_slug") == object_slug), None)
+            object_label = (matched.get("singular_noun") if matched else None) or object_slug.title()
+            detection_note = (
+                f"Using object `{object_slug}` from cached config "
+                f"(`{args.config or vc_config.default_config_path(workspace_slug)}`)."
+            )
+        else:
+            detected, candidates = common.detect_deal_object(objects)
+            if not detected:
+                hint = f" Candidates seen: {', '.join(candidates)}." if candidates else ""
+                print(
+                    "error: could not confidently identify a deal/investment object in this "
+                    f"workspace's schema.{hint} Re-run with --object <slug>.",
+                    file=sys.stderr,
+                )
+                return 2
+            object_slug = detected.get("api_slug")
+            object_label = detected.get("singular_noun") or object_slug.title()
+            detection_note = f"Auto-detected deal object: `{object_slug}` ({object_label})."
+
+        try:
+            attrs = common.fetch_attributes(token, object_slug)
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            print(f"error: could not read attributes for object '{object_slug}' (HTTP {status}).", file=sys.stderr)
+            return 2
+
+        if args.detect_only:
+            stage_attr = common.find_stage_attribute(attrs)
+            closed_guess: list[str] = []
+            all_status_titles: list[str] = []
+            stage_slug_out = None
+            if stage_attr is not None:
+                stage_slug_out = stage_attr.get("api_slug")
+                try:
+                    statuses = common.fetch_statuses(token, object_slug, stage_slug_out)
+                    all_status_titles = [s.get("title") for s in statuses if s.get("title")]
+                    closed_guess = sorted(common.classify_closed_statuses(statuses))
+                except requests.HTTPError:
+                    pass
+            print(
+                json.dumps(
+                    {
+                        "source": "attio",
+                        "workspace_slug": workspace_slug,
+                        "object": object_slug,
+                        "object_candidates": None if args.object else common.detect_deal_object(objects)[1],
+                        "stage_attribute": stage_slug_out,
+                        "status_titles_all": all_status_titles,
+                        "closed_status_titles_guess": closed_guess,
+                        "stale_days_default": DEFAULT_STALE_DAYS,
+                        "note": (
+                            "Confirm `object`, `closed_status_titles_guess`, and `stale_days` with the "
+                            "human, then save the confirmed values as "
+                            f".vc-skills-config/{workspace_slug}.json. No records or notes were fetched, "
+                            "no grade or digest was computed."
+                        ),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
+        try:
+            records = common.fetch_records(token, object_slug, full=args.full)
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            print(f"error: could not read records for object '{object_slug}' (HTTP {status}).", file=sys.stderr)
+            return 2
+
+        stale_days = args.stale_days if args.stale_days is not None else (config or {}).get("stale_days", DEFAULT_STALE_DAYS)
+
+        # --- Stage-attribute + closed-status detection, done once and shared -----
+        stage_attr = common.find_stage_attribute(attrs)
+        closed_titles: set[str] | None = None
+        stage_error: str | None = None
+        stage_skip_note = (
+            "No clear pipeline-stage (status-type) attribute detected on this object -- skipped. "
+            "This workspace may model stage differently, or have multiple status fields with "
+            "ambiguous names."
+        )
+        stage_ok = False
+        stage_slug = None
+
+        if stage_attr is not None:
+            stage_slug = stage_attr.get("api_slug")
+            stage_label = stage_attr.get("title") or stage_slug
+            if config and config.get("closed_status_titles"):
+                closed_titles = set(config["closed_status_titles"])
+                stage_ok = True
+            else:
+                try:
+                    statuses = common.fetch_statuses(token, object_slug, stage_slug)
+                    closed_titles = common.classify_closed_statuses(statuses)
+                    stage_ok = True
+                except requests.HTTPError:
+                    stage_error = f"Could not read status options for `{stage_label}` -- skipped."
+                    stage_skip_note = stage_error
+
+        # --- Notes, fetched once and shared -------------------------------------
+        notes: list[dict] | None
+        notes_error: str | None
+        try:
+            notes = common.fetch_notes(token, object_slug, full=args.full)
+            notes_error = None
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            notes = None
+            notes_error = f"Could not read Notes (HTTP {status}) -- token may lack note read scope. Skipped."
+
+        if notes is not None:
+            all_noted_ids = {n.get("parent_record_id") for n in notes if n.get("parent_record_id")}
+        else:
+            all_noted_ids = None
+
+        bundle_mode = False
+        full_scan = args.full
 
     movement_cutoff = datetime.now(timezone.utc) - timedelta(days=args.days)
     if notes is not None:
@@ -358,7 +447,7 @@ def main() -> int:
         stale_bucket = movement.Bucket(name="Gone stale", count=0, applicable=False, findings=[stage_skip_note])
 
     dd_findings: list[str] = []
-    if notes is not None and not args.full:
+    if notes is not None and not full_scan:
         dd_findings.append(
             "Notes are sampled in the same paginated order Attio returns them in, not "
             "guaranteed to correlate with recency -- use --full for an exact figure on a "
@@ -392,7 +481,8 @@ def main() -> int:
         "object_label": object_label,
         "detection_note": detection_note,
         "records_scanned": len(records),
-        "full_scan": args.full,
+        "full_scan": full_scan,
+        "bundle_mode": bundle_mode,
         "stale_days": stale_days,
         "days": args.days,
     }

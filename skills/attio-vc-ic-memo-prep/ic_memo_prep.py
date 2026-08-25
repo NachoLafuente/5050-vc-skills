@@ -156,6 +156,19 @@ def fetch_records(token: str, object_slug: str, full: bool = False, limit: int =
     return all_records
 
 
+def load_bundle(path: str) -> dict:
+    """Parse an --input MCP bundle file (see SKILL.md's 'Gathering data via
+    MCP' section for the schema). Its `attributes`/`records`/`notes` shapes
+    are deliberately byte-for-byte what fetch_attributes()/fetch_records()/
+    fetch_record_notes() above already return, so resolve_header_fields(),
+    record_name(), and everything else downstream of retrieval consumes
+    bundle data unchanged. Raises OSError/json.JSONDecodeError on a missing
+    or malformed file -- the caller in main() catches both.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def fetch_record_by_id(token: str, object_slug: str, record_id: str) -> dict | None:
     """Direct single-record lookup. Returns None on 404 (not this object /
     wrong id), re-raises any other HTTP error (e.g. auth failure) so it
@@ -214,15 +227,22 @@ def fetch_note_body(token: str, note_id: str) -> str | None:
     return extract_note_text(data)
 
 
-def full_note_text(token: str, note: dict) -> str:
+def full_note_text(token: str | None, note: dict) -> str:
+    """token is None in --input (MCP bundle) mode -- no network fallback is
+    possible or attempted there. SKILL.md's MCP instructions have Claude call
+    get-note-body per note up front so bundle notes should already carry
+    full text under one of NOTE_CONTENT_KEYS; this only hits the "unavailable"
+    line below if that step was skipped or a note genuinely has no body.
+    """
     text = extract_note_text(note)
     if text:
         return text
-    note_id = (note.get("id") or {}).get("note_id")
-    if isinstance(note_id, str):
-        fetched = fetch_note_body(token, note_id)
-        if fetched:
-            return fetched
+    if token is not None:
+        note_id = (note.get("id") or {}).get("note_id")
+        if isinstance(note_id, str):
+            fetched = fetch_note_body(token, note_id)
+            if fetched:
+                return fetched
     return "(note text unavailable -- could not read a content field on the note or its body)"
 
 
@@ -519,7 +539,17 @@ def main() -> int:
         description="Pull Deal Header fields + raw chronological notes for one deal from a VC/PE fund's Attio workspace"
     )
     p.add_argument("--token", help="Attio API token (default: $ATTIO_API_KEY or $ATTIO_OAUTH2)")
-    p.add_argument("--deal", help="Deal name (exact or partial) or Attio record ID. Required unless --detect-only.")
+    p.add_argument(
+        "--input",
+        help="Path to an 'MCP bundle' JSON file assembled from Attio MCP tool calls, in place of a "
+        "live --token/ATTIO_API_KEY run. This is the default data-gathering path when Attio MCP "
+        "tools are available in the session -- see SKILL.md's 'Gathering data via MCP' section for "
+        "the exact schema and tool-call sequence. --token/ATTIO_API_KEY is ignored when --input is "
+        "set. --deal is optional here: if the bundle contains exactly one record (the normal case, "
+        "since Claude already resolved the target deal before building the bundle), it's used "
+        "directly; --deal still works to disambiguate a bundle with more than one record.",
+    )
+    p.add_argument("--deal", help="Deal name (exact or partial) or Attio record ID. Required unless --detect-only or --input with a single-record bundle.")
     p.add_argument("--object", help="Explicit deal/investment object slug. Overrides auto-detection and any cached config.")
     p.add_argument(
         "--config",
@@ -535,13 +565,104 @@ def main() -> int:
     p.add_argument("--json", action="store_true", help="Output JSON instead of markdown")
     args = p.parse_args()
 
+    if args.input:
+        # --- MCP bundle path: no network calls, no token. See load_bundle()
+        # and this skill's SKILL.md "Gathering data via MCP" section. ---
+        if args.detect_only:
+            print(
+                "error: --detect-only is for the --token/ATTIO_API_KEY path. In MCP mode, detect "
+                "the object directly with the Attio MCP tools (list-lists, "
+                "list-attribute-definitions) -- see SKILL.md's 'Gathering data via MCP' section.",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            bundle = load_bundle(args.input)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"error: could not read --input bundle '{args.input}': {e}", file=sys.stderr)
+            return 2
+
+        ws = {
+            "workspace_name": bundle.get("workspace_name") or "Unknown",
+            "workspace_slug": bundle.get("workspace_slug") or "",
+            "workspace_id": None,
+        }
+        object_slug = args.object or bundle.get("object_slug") or ""
+        if not object_slug:
+            print("error: MCP bundle has no `object_slug`, and none was given via --object.", file=sys.stderr)
+            return 2
+        object_label = bundle.get("object_label") or object_slug.title()
+        detection_note = f"Using object `{object_slug}` from MCP bundle `{args.input}`."
+
+        attrs = bundle.get("attributes") or []
+        bundle_records = bundle.get("records") or []
+        bundle_notes = bundle.get("notes") or []
+
+        if args.deal:
+            deal_query = args.deal.strip()
+            if UUID_RE.match(deal_query):
+                matches = [r for r in bundle_records if (r.get("id") or {}).get("record_id") == deal_query]
+            else:
+                matches = _match_by_name(bundle_records, deal_query)
+            considered = len(bundle_records)
+            if len(matches) == 1:
+                record, how = matches[0], "id" if UUID_RE.match(deal_query) else "name"
+            elif len(matches) > 1:
+                names = "; ".join(
+                    f"{record_name(r)} (`{(r.get('id') or {}).get('record_id')}`)" for r in matches[:10]
+                )
+                print(
+                    f"error: '{args.deal}' matches {len(matches)} records in the bundle, ambiguous: "
+                    f"{names}. Re-run with the exact record ID, or rebuild the bundle scoped to one deal.",
+                    file=sys.stderr,
+                )
+                return 2
+            else:
+                print(
+                    f"error: no deal matching '{args.deal}' found in the MCP bundle ({considered} "
+                    "record(s) included). Check spelling, or rebuild the bundle scoped to this deal.",
+                    file=sys.stderr,
+                )
+                return 2
+        elif len(bundle_records) == 1:
+            record, how, considered = bundle_records[0], "bundle (single record)", 1
+        else:
+            print(
+                "error: --deal is required when the MCP bundle contains more than one record "
+                f"({len(bundle_records)} found).",
+                file=sys.stderr,
+            )
+            return 2
+
+        record_id = (record.get("id") or {}).get("record_id")
+        notes = sorted(
+            (n for n in bundle_notes if n.get("parent_record_id") == record_id),
+            key=lambda n: n.get("created_at") or "",
+        )
+        header_fields = resolve_header_fields(attrs, record)
+
+        meta = {
+            "object_slug": object_slug,
+            "object_label": object_label,
+            "detection_note": detection_note,
+            "matched_by": how,
+            "considered": considered,
+        }
+
+        if args.json:
+            print(render_json(ws, meta, record, header_fields, notes, token=None))
+        else:
+            print(render(ws, meta, record, header_fields, notes, token=None))
+        return 0
+
     if not args.detect_only and not args.deal:
-        print("error: --deal is required (unless --detect-only)", file=sys.stderr)
+        print("error: --deal is required (unless --detect-only or --input with a single-record bundle)", file=sys.stderr)
         return 2
 
     token = args.token or os.environ.get("ATTIO_API_KEY") or os.environ.get("ATTIO_OAUTH2")
     if not token:
-        print("error: provide --token or set ATTIO_API_KEY", file=sys.stderr)
+        print("error: provide --token or set ATTIO_API_KEY, or pass --input with an MCP bundle", file=sys.stderr)
         return 2
 
     try:

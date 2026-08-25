@@ -61,17 +61,33 @@ All names and numbers are synthetic.
 /plugin install 5050-vc-skills
 ```
 
-No `git clone`, no manual file copying -- Claude Code fetches the 4 skills directly. Then just ask
-Claude to run one, e.g. "run the pipeline hygiene check on my Attio workspace, token is
-`<your-attio-api-token>`." Claude handles the first-run setup questions (see "First run" below) and
-runs the script itself.
+No `git clone`, no manual file copying -- Claude Code fetches the 4 skills directly.
 
-One manual step still applies either way you install -- see "One thing plugin install doesn't do"
-below.
+**Already have Attio connected to Claude via MCP? Just ask.** If your Claude session already has the
+official Attio MCP connector set up, you don't need an API key at all -- just ask Claude to run one
+of the skills, e.g. "run the pipeline hygiene check on my Attio workspace." Claude sees the
+`mcp__attio-official__*` tools in its session, gathers the data through them directly, and runs the
+script itself. This is the default path for all 4 skills' Attio side (Affinity is unaffected, see
+below) -- each skill's `SKILL.md` has a "Gathering data via MCP" section with the exact tool-call
+sequence Claude follows.
+
+**No Attio MCP connected? Use an API key instead.** Every skill falls back to a plain Attio API
+token the same way it always has:
+
+```
+"run the pipeline hygiene check on my Attio workspace, token is <your-attio-api-token>"
+```
+
+Claude handles the first-run setup questions (see "First run" below) and runs the script itself,
+same on either path.
+
+One manual step still applies regardless of install method or data-source path -- see "One thing
+plugin install doesn't do" below.
 
 ### Manual install
 
-For running the scripts directly, without Claude Code's plugin system:
+For running the scripts directly, without Claude Code's plugin system (this path always uses an API
+token -- MCP tool calls only happen inside a Claude session):
 
 ```bash
 # 1. Get the toolkit
@@ -85,6 +101,10 @@ ATTIO_API_KEY=<your-attio-api-token> python skills/attio-vc-ic-pipeline-prep/ic_
 # 3. Read the report. If it flagged something you don't want to fix alone:
 #    -> https://calendar.notion.so/meet/nacholafuentemoreno/gtm-expert
 ```
+
+**Note:** MCP mode (above) applies to the **Attio side of these skills only**. Affinity, where
+supported (`attio-vc-portfolio-health`, `attio-vc-coinvestor-map`), has no MCP equivalent in scope
+here and always uses `--affinity-token`/`AFFINITY_API_KEY`, on any install path.
 
 ### One thing plugin install doesn't do
 
@@ -107,14 +127,16 @@ repo than trading one `pip install` for.
 
 The first time any of these 4 skills runs against a fund's workspace, it would otherwise re-guess
 (via keyword matching) which object is the deal/investment object, and which statuses count as
-closed/invested -- on every single run, with no memory. Instead, run any skill's `--detect-only`
-flag once, confirm the guess with a handful of short questions, and the answer is cached to
-`.vc-skills-config/<workspace-slug>.json` (gitignored, never committed -- it's derived from your
-live workspace, not repo content). Every later run of any of the 4 skills against that same
-workspace skips straight to the real command, no re-asking.
+closed/invested -- on every single run, with no memory. Instead, confirm the guess once with a
+handful of short questions, and the answer is cached to `.vc-skills-config/<workspace-slug>.json`
+(gitignored, never committed -- it's derived from your live workspace, not repo content). Every
+later run of any of the 4 skills against that same workspace skips straight to the real command, no
+re-asking. This works the same way on the Attio side whether Claude is gathering data via MCP tool
+calls or a `--detect-only` API-token run -- see each skill's own "Gathering data via MCP" section for
+the MCP-specific detection sequence, and "First run" section for the shared confirm/cache flow.
 
-Each skill's own `SKILL.md` has the exact `--detect-only` command and the short question list for
-that skill -- see each skill's own "First run" section:
+Each skill's own `SKILL.md` has the exact `--detect-only` command (token path) and the short
+question list for that skill -- see each skill's own "First run" section:
 [attio-vc-ic-pipeline-prep](skills/attio-vc-ic-pipeline-prep/SKILL.md#first-run-confirm-once-skip-the-guessing-forever),
 [attio-vc-ic-memo-prep](skills/attio-vc-ic-memo-prep/SKILL.md#first-run-confirm-the-deal-object-once),
 [attio-vc-portfolio-health](skills/attio-vc-portfolio-health/SKILL.md#first-run-confirm-once-skip-the-guessing-forever),
@@ -138,7 +160,10 @@ syndicate relationships are captured anywhere queryable at all.
 **Source support differs per skill.** `attio-vc-ic-pipeline-prep` and `attio-vc-ic-memo-prep` are
 **Attio-only**. `attio-vc-portfolio-health` and `attio-vc-coinvestor-map` support **Attio or
 Affinity** via `--source` (auto-detected if only one API key is set). Don't assume dual-source
-applies repo-wide — it doesn't.
+applies repo-wide — it doesn't. **MCP applies to the Attio side of all 4 skills, not Affinity** —
+if you already have Attio connected to Claude via MCP, that's the default way each skill gathers
+Attio data (see "Run it in 5 minutes" above); Affinity access is always via `AFFINITY_API_KEY`,
+whichever skill you're running.
 
 ### `/attio-vc-ic-pipeline-prep`: Pipeline hygiene grade + what moved
 
@@ -269,7 +294,17 @@ unknowns, not manufacture confidence.
 
 ## Read-only by design
 
-No write actions, no destructive operations, on either platform. Grep `requests.request` in
+No write actions, no destructive operations, on any platform or data-access path — including MCP.
+On the Attio-via-MCP path, each skill's `SKILL.md` only ever instructs read-oriented
+`mcp__attio-official__*` tools (`list-lists`, `list-attribute-definitions`,
+`list-list-attribute-definitions`, `list-records`, `search-records`, `get-records-by-ids`,
+`search-notes-by-metadata`, `get-note-body`) — never `create-record`, `update-record`,
+`upsert-record`, `merge-records`, `create-note`, `update-note`, `create-task`, `update-task`,
+`create-comment`, `delete-comment`, or any other write-shaped MCP tool. The bundle JSON Claude
+assembles from those calls is read by the script via `--input`, itself making zero network or MCP
+calls in that mode.
+
+No write actions, no destructive operations, on either token-based platform either. Grep `requests.request` in
 [`_common.py`](skills/attio-vc-ic-pipeline-prep/_common.py) (the only place `attio-vc-ic-pipeline-prep`
 touches the network — `_hygiene.py` and `_movement.py` call into it, they don't call the API
 directly) or in [`ic_memo_prep.py`](skills/attio-vc-ic-memo-prep/ic_memo_prep.py), and you'll find

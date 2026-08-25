@@ -1,6 +1,6 @@
 ---
 name: attio-vc-coinvestor-map
-description: Relationship-density check on co-investor/syndicate tracking across a VC/PE fund's own deals -- both pipeline and portfolio, not just closed-won. Reports coverage % (deals with at least one co-investor logged) plus a ranked frequency table of which co-investor names appear most often across the fund's own deals. Use when the user asks to "map our co-investors", "check syndicate tracking", "who do we co-invest with most", "audit co-investor data", "which deals have no co-investor logged", or pastes an Attio or Affinity API key for a fund/investment workspace and wants a relationship-density report, not a grade. Supports both Attio and Affinity via --source (auto-detected if only one token is set). Detects a co-investor/syndicate attribute or field by keyword match against attribute/field titles -- handles both a record-reference/relationship-type field (multiple linked Investor records) and a plain text/multi-select field. Does NOT replicate Affinity's own relationship-strength/interaction-scoring product -- reports only what's in an explicit, human-entered field. Read-only, samples by default (Attio 500 records, Affinity 75 entities -- small on purpose, since Affinity's field-value lookup is per-entity with no bulk endpoint). Output is markdown (or JSON with --json): coverage % + ranked frequency table + gap list, not a 0-100 grade.
+description: Relationship-density check on co-investor/syndicate tracking across a VC/PE fund's own deals -- both pipeline and portfolio, not just closed-won. Reports coverage % (deals with at least one co-investor logged) plus a ranked frequency table of which co-investor names appear most often across the fund's own deals. Use when the user asks to "map our co-investors", "check syndicate tracking", "who do we co-invest with most", "audit co-investor data", "which deals have no co-investor logged", or wants a relationship-density report, not a grade, for a fund/investment Attio or Affinity workspace. Supports both Attio and Affinity via --source (auto-detected if only one token is set). On Attio, the default data source is the Attio MCP tools (mcp__attio-official__*) already connected in the session -- Claude gathers records/attributes via MCP tool calls, assembles a JSON bundle, and runs the script with --input; --token/ATTIO_API_KEY is the fallback. Affinity has no MCP equivalent in scope here and always uses --affinity-token/AFFINITY_API_KEY. Detects a co-investor/syndicate attribute or field by keyword match against attribute/field titles -- handles both a record-reference/relationship-type field (multiple linked Investor records) and a plain text/multi-select field. Does NOT replicate Affinity's own relationship-strength/interaction-scoring product -- reports only what's in an explicit, human-entered field. Read-only on every path, samples by default (Attio 500 records or an MCP-page-bounded equivalent, Affinity 75 entities -- small on purpose, since Affinity's field-value lookup is per-entity with no bulk endpoint). Output is markdown (or JSON with --json): coverage % + ranked frequency table + gap list, not a 0-100 grade.
 license: MIT
 author: 5050Growth
 ---
@@ -43,21 +43,105 @@ Do NOT use this skill if the user wants:
 
 ## Inputs
 
-Two supported sources, resolved via `--source {attio,affinity}`:
+Two supported sources. **Affinity has no MCP equivalent in scope here** -- it always uses
+`--affinity-token`/`AFFINITY_API_KEY`. Attio has two paths:
 
-- **Attio**: token via `--token`, `ATTIO_API_KEY`, or `ATTIO_OAUTH2`.
-- **Affinity**: key via `--affinity-token` or `AFFINITY_API_KEY`. Generic name only, mirroring
+- **Attio, default: MCP.** If `mcp__attio-official__*` tools are present in the current session's
+  tool list, that's the data source for Attio -- no API key needed. Claude gathers records and
+  attributes via MCP tool calls, assembles a JSON bundle, and runs the script with `--input
+  <bundle-path>`. See "Gathering data via MCP (Attio only)" below. Notably simpler than the sibling
+  skills' MCP flow: this skill never reads Notes at all, only record attribute values, so there's no
+  notes-window or per-record-notes strategy to design here.
+- **Attio, fallback: API token.** `--token`, `ATTIO_API_KEY`, or `ATTIO_OAUTH2`.
+- **Affinity: API key.** `--affinity-token` or `AFFINITY_API_KEY`. Generic name only, mirroring
   `ATTIO_API_KEY` -- this script never reads a client-scoped variable name, even if one happens to
   be set in the same shell.
 
-If `--source` isn't given, it's inferred from whichever token/env var is actually set; both or
-neither set means the script asks for `--source` explicitly.
+`--source` picks which CRM: pass `--input` for Attio-via-MCP (source is implied), or `--source
+{attio,affinity}` for the token/key paths. If `--source` isn't given and no `--input` is set, it's
+inferred from whichever token/env var is actually set; both or neither set means the script asks for
+`--source` explicitly.
 
-Optional `--object <slug>` (Attio) or `--list <id-or-name>` (Affinity) to override auto-detection.
-Without it, Affinity's detection **unions every list** matching deal/investment/portfolio/holding
-keywords (not just the single best match) -- co-investor tracking matters both pre- and
+Optional `--object <slug>` (Attio) or `--list <id-or-name>` (Affinity) to override auto-detection, on
+any path. Without it, Affinity's detection **unions every list** matching deal/investment/portfolio/
+holding keywords (not just the single best match) -- co-investor tracking matters both pre- and
 post-investment, so a fund with separate "Deal Flow" and "Portfolio" lists gets both scanned, deduped
-by entity so a company present in both isn't double-counted.
+by entity so a company present in both isn't double-counted. (On Attio MCP, Claude does the analogous
+union when gathering data -- see below.)
+
+## Gathering data via MCP (Attio only)
+
+Affinity is unaffected by this section -- it's always `--affinity-token`/`AFFINITY_API_KEY`, no MCP
+path exists for it in this repo's scope.
+
+This is the simplest MCP flow of the four skills in this repo: co-investor coverage needs record
+attribute values only, no Notes at all, and (unlike the sibling `attio-vc-portfolio-health`) no
+stage/status filtering either -- **every** record in scope counts, pipeline and portfolio both,
+since co-investor tracking matters before and after a deal closes.
+
+### 1. Find the deal object
+
+Same discovery approach as the sibling skills: try `list-attribute-definitions` with `object:
+"deals"` first, else inspect `list-lists`' parent-object-type field for deal/investment/pipeline
+naming. Unlike the token path's Affinity union (checking deal AND portfolio lists both), the Attio
+side of this skill only ever needs the one general deal/investment object -- co-investor data on a
+closed-won deal still lives on that same object's record, Attio has no separate "portfolio object"
+concept the way a fund's schema might.
+
+### 2. Pull attributes and find the co-investor field
+
+`list-attribute-definitions` with `object: "<slug>"`. Map into the bundle's `attributes` array as
+`{"api_slug": ..., "title": ..., "type": ...}` -- same fields the token path reads. Match against
+the same keyword set the token path's `field_title_matches()` checks: `co-investor`, `co investor`,
+`coinvestor`, `syndicate`, `other investors`, `round participants`. This is really just a sanity
+check before spending calls in step 3 -- if nothing matches, there's no point pulling records, the
+report is a short "not tracked" notice either way (see `render_not_tracked()`).
+
+### 3. Pull records
+
+`list-records` with `object: "<slug>"`, paginated in 50-record MCP pages, **no status/stage
+filtering** -- every record in scope, unlike the sibling portfolio-health skill. For a large
+pipeline+portfolio combined, ask the human how many pages is representative, same spirit as the
+sibling skills' scope questions.
+
+Each record's `values` for the matched co-investor attribute(s) goes into the bundle unchanged --
+whatever native shape the value carries (plain text `value`, `option` for a dropdown/multi-select,
+or `target_record_id` for a record-reference/relationship attribute -- this skill's
+`extract_coinvestor_names()` already duck-types across all of these, unresolved record-reference
+values are shown as a short id fragment, never resolved to a name, matching this repo's established
+no-extra-resolve-calls convention). Same degraded-precision fallback as the sibling skills applies if
+MCP returns a flat current-value shape.
+
+### 4. Assemble and run
+
+```json
+{
+  "workspace_name": "<fund/workspace display name>",
+  "workspace_slug": "<short human-provided identifier -- see the sibling pipeline-prep skill's 'Workspace identity under MCP' note>",
+  "object_slug": "deals",
+  "object_label": "Deal",
+  "attributes": [{"api_slug": "co_investors", "title": "Co-Investors", "type": "text"}],
+  "records": [
+    {
+      "id": {"record_id": "4f8a21c3-9e2b-4a11-8f3d-2c7b6a1e9d40"},
+      "created_at": "2026-05-01T12:00:00.000Z",
+      "values": {
+        "name": [{"active_from": "2026-05-01T12:00:00.000Z", "active_until": null, "value": "Acme Robotics"}],
+        "co_investors": [{"active_from": "2026-05-01T12:00:00.000Z", "active_until": null, "value": "Sequoia"}]
+      }
+    }
+  ]
+}
+```
+
+No `notes` field needed -- this skill never reads Notes. Write the bundle to a temp file, then:
+
+```bash
+python skills/attio-vc-coinvestor-map/coinvestor_map.py --input /path/to/bundle.json
+```
+
+`--json` still works exactly as on the token path. `--source`, `--token`, `--object`, `--full`, and
+`--detect-only` don't apply when `--input` is set (detection already happened in steps 1-2 above).
 
 ## Before running: the Affinity cost warning is not optional
 
@@ -87,6 +171,10 @@ in this repo share the same `.vc-skills-config/<workspace-slug>.json` file, so *
 already ran `--detect-only` and saved a config with an `object` field for this workspace on Attio,
 this skill already has what it needs.**
 
+**On Attio via MCP:** there's no separate `--detect-only` MCP mode -- step 1 of "Gathering data via
+MCP" above already is the detection pass. Do that, ask the human the same one short question below,
+write the config, then pull records for the real bundle.
+
 Otherwise, on the first use of any skill in this repo for a workspace with no config file yet:
 
 1. Run `--detect-only`:
@@ -94,7 +182,8 @@ Otherwise, on the first use of any skill in this repo for a workspace with no co
    ATTIO_API_KEY=<token> python skills/attio-vc-coinvestor-map/coinvestor_map.py --detect-only
    AFFINITY_API_KEY=<key> python skills/attio-vc-coinvestor-map/coinvestor_map.py --source affinity --detect-only
    ```
-   Cheap and read-only -- list/object metadata only, no per-entity `/field-values` spend.
+   Cheap and read-only -- list/object metadata only, no per-entity `/field-values` spend. (Token/key
+   path only -- see above for MCP.)
 2. Ask the human one short question: "I found `<object>` (Attio) / `<lists_matched>` (Affinity) for
    your deals -- is that right?"
 3. On Attio, write the confirmed slug to `.vc-skills-config/<workspace-slug>.json`:
@@ -110,7 +199,16 @@ Otherwise, on the first use of any skill in this repo for a workspace with no co
 
 ## How to run
 
-Attio, sample mode:
+**Attio, MCP mode (default when Attio MCP tools are connected):** gather data per "Gathering data
+via MCP" above, then:
+
+```bash
+python skills/attio-vc-coinvestor-map/coinvestor_map.py --input /path/to/bundle.json
+```
+
+Add `--json` exactly as below; `--source`/`--token`/`--object`/`--full` don't apply.
+
+**Attio, token mode (fallback), sample mode:**
 
 ```bash
 ATTIO_API_KEY=<token> python skills/attio-vc-coinvestor-map/coinvestor_map.py
@@ -208,11 +306,29 @@ the sections above -- there's nothing to rank or count.
 - This tool has no opinion on relationship *quality* or *strength* -- see the scope boundary at the
   top of this file.
 
+### MCP-mode-specific limitations (Attio only)
+
+- **No verified object-enumeration MCP tool** -- object discovery goes through
+  `list-attribute-definitions`/`list-lists` inspection instead of a direct object list, same caveat
+  as the sibling skills.
+- **No live workspace-identity call** -- `workspace_slug`/`workspace_name` come from a
+  human-provided identifier, same as the sibling skills.
+- **Degraded field-value precision if MCP returns a flat current-value shape** instead of Attio's
+  historicized `values` array -- see "Gathering data via MCP" step 3. Impact here is limited to
+  `extract_coinvestor_names()` reading the right current value, since this skill has no
+  last-touched-timestamp computation to degrade.
+- This skill's MCP path is otherwise the cleanest of the four in this repo -- no Notes, no
+  stage/status filtering, no window-vs-exhaustive tradeoff to make.
+
 ## Safe to run on production
 
-Attio: only GET and POST-query calls (`/objects/{slug}/records/query`, `/objects/{slug}/
-attributes`). Affinity: only GET calls (`/rate-limit`, `/lists`, `/lists/{id}/list-entries`,
-`/fields`, `/field-values`). Neither platform is ever written to, deleted from, or modified.
+Attio (token path): only GET and POST-query calls (`/objects/{slug}/records/query`, `/objects/{slug}/
+attributes`). Attio (MCP path): only read-oriented `mcp__attio-official__*` tools (`list-lists`,
+`list-attribute-definitions`, `list-records`) -- never `create-record`, `update-record`,
+`upsert-record`, `merge-records`, or any other write-shaped MCP tool. `--input` reads a local JSON
+file Claude already built; the script makes zero network or MCP calls in that mode. Affinity: only
+GET calls (`/rate-limit`, `/lists`, `/lists/{id}/list-entries`, `/fields`, `/field-values`). No
+platform or path is ever written to, deleted from, or modified.
 
 Tokens: Attio from `--token`/`ATTIO_API_KEY`/`ATTIO_OAUTH2`; Affinity from
 `--affinity-token`/`AFFINITY_API_KEY` (generic name only, never a client-scoped variable). Never

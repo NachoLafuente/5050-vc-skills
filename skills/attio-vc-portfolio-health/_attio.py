@@ -393,6 +393,78 @@ def _load_stage_filtered(
     return LoadResult(detection_note=detection_note, scope_note=scope_note, companies=companies)
 
 
+def load_from_input(bundle: dict, invested_titles_override: set[str] | None = None) -> LoadResult:
+    """Attio-flavored MCP-bundle equivalent of load() -- same detection and
+    classification logic (find_stage_attribute, classify_invested_statuses,
+    current_status_title, _build_companies), fed from a bundle dict Claude
+    assembled via Attio MCP tool calls instead of from live API responses.
+    See this skill's SKILL.md "Gathering data via MCP" section for the
+    bundle schema and the tool-call sequence that produces it.
+
+    Unlike load(), this never calls detect_portfolio_object()/
+    detect_deal_object() itself -- Claude has already decided, when
+    gathering the data, whether it fetched a distinct Portfolio/Holding
+    object (bundle has no usable stage attribute or no `stage_statuses`) or
+    the general deal object (bundle has both, and stage-based filtering
+    applies). That mirrors load()'s two branches without needing the bundle
+    to carry an explicit "which path" flag -- the presence of a usable stage
+    attribute plus `stage_statuses` is the signal, same as it functionally
+    is for load()'s own branch choice.
+    """
+    object_slug = bundle.get("object_slug") or ""
+    object_label = bundle.get("object_label") or object_slug.title()
+    attrs = bundle.get("attributes") or []
+    records = bundle.get("records") or []
+    notes = bundle.get("notes") or []
+    stage_statuses_raw = bundle.get("stage_statuses") or []
+
+    stage_attr = find_stage_attribute(attrs) if attrs else None
+
+    if stage_attr is None or not stage_statuses_raw:
+        # No stage attribute detected, or no `stage_statuses` supplied:
+        # treat every record in the bundle as already-scoped to the
+        # portfolio -- the "distinct portfolio object" case, where Claude
+        # fetched only records from a dedicated Portfolio/Holding object and
+        # no status filtering applies or is possible.
+        companies = _build_companies(records, notes)
+        detection_note = (
+            f"Using object `{object_slug}` ({object_label}) from MCP bundle -- all records in the "
+            "bundle treated as portfolio companies (no `stage_statuses` supplied, or no clear "
+            "pipeline-stage attribute detected: bundle assumed already scoped to a distinct "
+            "portfolio object)."
+        )
+        scope_note = f"{len(records)} record(s) supplied in the MCP bundle"
+        return LoadResult(detection_note=detection_note, scope_note=scope_note, companies=companies)
+
+    stage_slug = stage_attr.get("api_slug")
+    stage_label = stage_attr.get("title") or stage_slug
+    if invested_titles_override:
+        invested_titles = set(invested_titles_override)
+        classification_src = "cached config"
+    else:
+        invested_titles = classify_invested_statuses(stage_statuses_raw)
+        classification_src = "auto-detected from the bundle's stage_statuses"
+
+    if not invested_titles:
+        raise DetectionError(
+            f"stage attribute `{stage_label}` on `{object_slug}` (from MCP bundle) has no status "
+            "option that reads as invested/closed-won/portfolio (checked against: invested, "
+            "portfolio, won, closed -- excluding anything reading as lost/passed). Cannot identify "
+            "the portfolio set from this bundle."
+        )
+
+    portfolio_records = [r for r in records if current_status_title(r, stage_slug) in invested_titles]
+    companies = _build_companies(portfolio_records, notes)
+    detection_note = (
+        f"Using object `{object_slug}` ({object_label}) from MCP bundle, filtered to records whose "
+        f"`{stage_label}` is one of ({classification_src}): {', '.join(sorted(invested_titles))}."
+    )
+    scope_note = (
+        f"{len(portfolio_records)} portfolio-stage of {len(records)} record(s) supplied in the MCP bundle"
+    )
+    return LoadResult(detection_note=detection_note, scope_note=scope_note, companies=companies)
+
+
 def _build_companies(records: list[dict], notes: list[dict]) -> list[CompanyRecord]:
     notes_by_record: dict[str, list[Note]] = {}
     for n in notes:

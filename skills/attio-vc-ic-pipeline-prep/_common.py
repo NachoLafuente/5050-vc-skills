@@ -25,6 +25,7 @@ No PATCH, PUT, or POST-write calls appear anywhere in this skill.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from typing import Any
@@ -150,6 +151,70 @@ def fetch_notes(token: str, object_slug: str, full: bool = False) -> list[dict]:
         if not full and pages >= NOTES_SAMPLE_PAGES:
             break
     return notes
+
+
+# --- MCP bundle loading ---------------------------------------------------------
+#
+# An "MCP bundle" is a JSON file Claude assembles from Attio MCP tool calls
+# (list-records / get-records-by-ids / list-attribute-definitions /
+# search-notes-by-metadata / get-note-body) instead of this script calling
+# the live REST API itself. Its `attributes`/`records`/`notes` shapes are
+# deliberately byte-for-byte what fetch_attributes()/fetch_records()/
+# fetch_notes() above already return -- so every function below this point
+# (detect_deal_object, find_stage_attribute, classify_closed_statuses,
+# active_stage_records, record_last_touched, record_name, and everything in
+# _hygiene.py / _movement.py) consumes bundle data with zero changes. See
+# SKILL.md's "Gathering data via MCP" section for the exact schema and the
+# tool-call sequence that produces it, and its "Degraded staleness precision
+# under MCP" note for what to do if a live MCP record turns out to carry
+# flat current-value attributes instead of the historicized array shape
+# assumed here.
+
+
+def load_bundle(path: str) -> dict:
+    """Parse an --input MCP bundle file. Raises OSError/json.JSONDecodeError
+    on a missing or malformed file -- the caller (ic_pipeline_prep.py's
+    main()) catches both and prints a usage error, same pattern as every
+    other input-validation failure in this script.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def bundle_workspace(bundle: dict) -> dict:
+    return {
+        "workspace_name": bundle.get("workspace_name") or "Unknown",
+        "workspace_slug": bundle.get("workspace_slug") or "",
+    }
+
+
+def bundle_attributes(bundle: dict) -> list[dict]:
+    return bundle.get("attributes") or []
+
+
+def bundle_records(bundle: dict) -> list[dict]:
+    return bundle.get("records") or []
+
+
+def bundle_notes(bundle: dict) -> list[dict]:
+    return bundle.get("notes") or []
+
+
+def bundle_stage_statuses(bundle: dict) -> list[dict]:
+    """Distinct status-option titles for the detected stage attribute.
+
+    Unlike fetch_statuses() (a dedicated Attio endpoint that returns every
+    configured status option for an attribute, used or not), the MCP tool
+    surface has no equivalent -- list-attribute-definitions does not
+    document returning status options. SKILL.md instructs Claude to
+    populate this from whatever status titles are actually observed on the
+    fetched records' current stage values instead, which is a reasonable
+    stand-in but can miss a configured status that no in-scope record
+    currently sits in. Empty/missing means "not supplied" -- callers should
+    treat that the same as fetch_statuses() failing on the live path (stage
+    classification skipped, not silently treated as zero closed statuses).
+    """
+    return bundle.get("stage_statuses") or []
 
 
 # --- Deal-object + attribute detection -----------------------------------------

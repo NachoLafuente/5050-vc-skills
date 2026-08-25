@@ -73,6 +73,14 @@ def main() -> int:
     )
     p.add_argument("--source", choices=["attio", "affinity"], help="Which CRM to read from. Auto-detected if only one token is set.")
     p.add_argument("--token", help="Attio API token (default: $ATTIO_API_KEY or $ATTIO_OAUTH2)")
+    p.add_argument(
+        "--input",
+        help="[Attio only] Path to an 'MCP bundle' JSON file assembled from Attio MCP tool calls, "
+        "in place of a live --token/ATTIO_API_KEY run. This is the default data-gathering path when "
+        "Attio MCP tools are available -- see SKILL.md's 'Gathering data via MCP' section. Takes "
+        "priority over --source/--token/--affinity-token when set; there is no Affinity MCP "
+        "equivalent, Affinity always uses --affinity-token/AFFINITY_API_KEY.",
+    )
     p.add_argument("--affinity-token", help="Affinity API key (default: $AFFINITY_API_KEY)")
     p.add_argument("--object", help="[Attio] Explicit object slug. Overrides auto-detection and any cached config.")
     p.add_argument("--list", dest="list_arg", help="[Affinity] Explicit list id or exact name. Overrides auto-detection and any cached config.")
@@ -106,6 +114,23 @@ def main() -> int:
     p.add_argument("--yes-i-know", action="store_true", help="[Affinity] Confirm you understand --full on the stage-filtered fallback path costs one /field-values call per entry.")
     args = p.parse_args()
 
+    if args.input:
+        if args.detect_only:
+            print(
+                "error: --detect-only is for the --token/ATTIO_API_KEY path. In MCP mode, detect "
+                "the object directly with the Attio MCP tools (list-lists, "
+                "list-attribute-definitions) -- see SKILL.md's 'Gathering data via MCP' section.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            with open(args.input, "r", encoding="utf-8") as f:
+                bundle = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"error: could not read --input bundle '{args.input}': {e}", file=sys.stderr)
+            return 2
+        return run_input(bundle, args)
+
     attio_token = args.token or os.environ.get("ATTIO_API_KEY") or os.environ.get("ATTIO_OAUTH2")
     affinity_token = args.affinity_token or os.environ.get("AFFINITY_API_KEY")
     source = resolve_source(args, attio_token, affinity_token)
@@ -120,6 +145,42 @@ def main() -> int:
             print("error: --source affinity requires --affinity-token or AFFINITY_API_KEY", file=sys.stderr)
             return 2
         return run_affinity(affinity_token, args)
+
+
+def run_input(bundle: dict, args) -> int:
+    """MCP bundle path -- Attio-flavored data, however sourced. No network
+    calls: attio.load_from_input() reuses the exact same stage-attribute
+    detection, invested-status classification, and CompanyRecord assembly
+    as run_attio()'s live-API path, just fed from the bundle dict instead.
+    """
+    workspace_slug = bundle.get("workspace_slug") or ""
+    config = vc_config.load_config(workspace_slug, args.config) if workspace_slug else None
+    invested_override = (
+        set(config["invested_status_titles"])
+        if config and config.get("invested_status_titles")
+        else None
+    )
+
+    try:
+        result = attio.load_from_input(bundle, invested_override)
+    except attio.DetectionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    board_days = args.board_days if args.board_days is not None else (config or {}).get("board_days", common.DEFAULT_BOARD_DAYS)
+    kpi_days = args.kpi_days if args.kpi_days is not None else (config or {}).get("kpi_days", common.DEFAULT_KPI_DAYS)
+
+    meta = {
+        "fund_name": bundle.get("workspace_name") or "Unknown",
+        "workspace_slug": workspace_slug,
+        "source_label": "Attio (MCP bundle)",
+        "run_ts": _now_str(),
+        "detection_note": result.detection_note,
+        "scope_note": result.scope_note,
+        "board_days": board_days,
+        "kpi_days": kpi_days,
+    }
+    return _render_and_print(meta, result.companies, board_days, kpi_days, args)
 
 
 def run_attio(token: str, args) -> int:

@@ -173,6 +173,36 @@ def extract_coinvestor_names(record: dict, attr_slugs: list[str]) -> list[str]:
     return names
 
 
+def load_from_input(bundle: dict) -> "LoadResult":
+    """Attio-flavored MCP-bundle equivalent of load() -- same co-investor
+    field detection and value extraction (find_coinvestor_attributes,
+    extract_coinvestor_names, record_name), fed from a bundle dict Claude
+    assembled via Attio MCP tool calls instead of live API responses. No
+    object detection here -- the bundle is already scoped to one object; see
+    this skill's SKILL.md "Gathering data via MCP" section for the schema.
+    """
+    object_slug = bundle.get("object_slug") or ""
+    src_note = f"Using object `{object_slug}` from MCP bundle."
+    attrs = bundle.get("attributes") or []
+    coinvestor_attrs = find_coinvestor_attributes(attrs)
+    records = bundle.get("records") or []
+    scope_note = f"{len(records)} record(s) supplied in the MCP bundle"
+
+    if not coinvestor_attrs:
+        return LoadResult(detection_note=src_note, scope_note=scope_note, field_note=None, deals=[])
+
+    attr_slugs = [a.get("api_slug") for a in coinvestor_attrs if a.get("api_slug")]
+    labels = ", ".join(f"`{a.get('title') or a.get('api_slug')}`" for a in coinvestor_attrs)
+
+    deals = []
+    for r in records:
+        rid = (r.get("id") or {}).get("record_id") or ""
+        deals.append(DealRecord(key=rid, name=record_name(r), names=extract_coinvestor_names(r, attr_slugs)))
+
+    detection_note = f"{src_note} Co-investor field(s) matched: {labels}."
+    return LoadResult(detection_note=detection_note, scope_note=scope_note, field_note=labels, deals=deals)
+
+
 @dataclass
 class LoadResult:
     detection_note: str
