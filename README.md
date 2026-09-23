@@ -25,6 +25,10 @@ No Creandum, Point Nine, Bessemer, or a16z repo publishes an official LP skill. 
 | Pass memory | Bessemer anti-portfolio: keep the why | [skills/lp-pass-memory/SKILL.md](skills/lp-pass-memory/SKILL.md) |
 | Allocation fit | Point Nine: only numbers already in the file | [skills/lp-allocation-fit/SKILL.md](skills/lp-allocation-fit/SKILL.md) |
 | Re-up brief | a16z Crypto: downside before the ask | [skills/lp-reup-letter/SKILL.md](skills/lp-reup-letter/SKILL.md) |
+| Already seen | Heal: have we seen this company | [skills/already-seen/SKILL.md](skills/already-seen/SKILL.md) |
+| Why we passed | Heal: pass reasons across a slice | [skills/why-we-passed/SKILL.md](skills/why-we-passed/SKILL.md) |
+| LPs for this deal | Heal: label a deal for LPs only when appetite is on file | [skills/lp-fit-for-deal/SKILL.md](skills/lp-fit-for-deal/SKILL.md) |
+| Founder update review | Hemrock: extract metrics, human confirms, no write | [skills/founder-update-review/SKILL.md](skills/founder-update-review/SKILL.md) |
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Built by 5050Growth](https://img.shields.io/badge/built_by-5050Growth-black)](https://5050growth.com)
