@@ -13,6 +13,19 @@ By [5050Growth](https://5050growth.com), a verified [Attio Expert](https://attio
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
+LP skills (copy the `SKILL.md` into Claude). Prompt-only. They read the IR book and refuse to invent a ticket, a pass reason, or a DPI.
+
+No Creandum, Point Nine, Bessemer, or a16z repo publishes an official LP skill. These use the published habit, named in the file.
+
+| Skill | Habit | File |
+|---|---|---|
+| Meeting brief | Affinity Meeting Prep | [skills/lp-meeting-brief/SKILL.md](skills/lp-meeting-brief/SKILL.md) |
+| LP history | "Everything about this group" from the CRM | [skills/lp-history/SKILL.md](skills/lp-history/SKILL.md) |
+| Relationship | Activity is the owner, not the job title | [skills/lp-relationship/SKILL.md](skills/lp-relationship/SKILL.md) |
+| Pass memory | Bessemer anti-portfolio: keep the why | [skills/lp-pass-memory/SKILL.md](skills/lp-pass-memory/SKILL.md) |
+| Allocation fit | Point Nine: only numbers already in the file | [skills/lp-allocation-fit/SKILL.md](skills/lp-allocation-fit/SKILL.md) |
+| Re-up brief | a16z Crypto: downside before the ask | [skills/lp-reup-letter/SKILL.md](skills/lp-reup-letter/SKILL.md) |
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Built by 5050Growth](https://img.shields.io/badge/built_by-5050Growth-black)](https://5050growth.com)
 [![Attio Expert](https://img.shields.io/badge/Attio-Expert-black)](https://attio.com/experts/5050growth)
