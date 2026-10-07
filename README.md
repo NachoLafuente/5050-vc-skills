@@ -10,6 +10,9 @@ By [5050Growth](https://5050growth.com), a verified [Attio Expert](https://attio
 │   /attio-vc-ic-memo-prep       Per-deal IC memo skeleton from your notes.  │
 │   /attio-vc-portfolio-health   Board/KPI cadence on the portfolio side.    │
 │   /attio-vc-coinvestor-map     Co-investor / syndicate coverage + ranking. │
+│   /attio-lp-history            One LP's commitments, totals, outcomes.     │
+│   /attio-lp-relationship-summary  Who, who knows them, what was last said. │
+│   /attio-lp-meeting-brief      One page before an LP call.                 │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -36,6 +39,20 @@ Two more things worth knowing before you run it:
 - **A script you run by hand and read once is fair game to give away, even when it drafts prose.** The movement-digest half of `attio-vc-ic-pipeline-prep` below writes a short recap of what moved, not just a score. What's a paid engagement is wiring this same logic to run unattended on a schedule — Slack or email delivery, tuned to your fund's exact stage names, zero maintenance (see [5050Growth](https://5050growth.com)). That's a service. This repo is scripts.
 
 By the same team as [attio-toolkit](https://github.com/NachoLafuente/attio-toolkit) (general Attio hygiene audits, backups, schema diagrams) and [5050-gtm](https://github.com/NachoLafuente/5050-gtm) (GTM/outbound skills, including a call-coach). Different job, same read-only-by-default philosophy.
+
+---
+
+## The LP side (investor relations)
+
+Three skills for funds that keep their LP book in Attio (investor groups, entities, commitments,
+funds). They are instructions only, no script, and read through the official Attio MCP connector:
+
+- [`attio-lp-history`](skills/attio-lp-history/SKILL.md): every commitment by fund and vehicle, totals per currency, past fundraising outcomes. [Sample](examples/sample-fund/lp-history.md).
+- [`attio-lp-relationship-summary`](skills/attio-lp-relationship-summary/SKILL.md): the people, who holds the relationship on the fund side, a dated timeline, gaps. [Sample](examples/sample-fund/lp-relationship-summary.md).
+- [`attio-lp-meeting-brief`](skills/attio-lp-meeting-brief/SKILL.md): one page before an LP call, with three questions tied to what is on file. [Sample](examples/sample-fund/lp-meeting-brief.md).
+
+Same rules as the deal-side skills: read-only, nothing invented, currencies never added together,
+feeder vehicles kept out of totals when the workspace flags them.
 
 ---
 
